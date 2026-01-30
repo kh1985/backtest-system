@@ -14,11 +14,11 @@ sys.path.insert(0, str(ROOT_DIR))
 import streamlit as st
 
 from ui.components.styles import inject_custom_css
-from ui.pages.data_loader import render_data_loader_page
-from ui.pages.strategy_builder import render_strategy_builder_page
-from ui.pages.backtest_runner import render_backtest_runner_page
-from ui.pages.trade_analysis import render_trade_analysis_page
-from ui.pages.optimizer_page import render_optimizer_page
+from ui.views.data_loader import render_data_loader_page
+from ui.views.strategy_builder import render_strategy_builder_page
+from ui.views.backtest_runner import render_backtest_runner_page
+from ui.views.trade_analysis import render_trade_analysis_page
+from ui.views.optimizer_page import render_optimizer_page
 
 
 # ページ定義 (key, icon, label)
