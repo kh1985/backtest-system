@@ -1,7 +1,7 @@
 """
 戦略テンプレート
 
-6種の組み込みテンプレートとパラメータ範囲定義。
+12種の組み込みテンプレート（ロング6種＋ショート6種）とパラメータ範囲定義。
 プレースホルダー {param} で変数パラメータを定義し、
 generate_configs() で全組み合わせ（直積）を自動生成。
 """
@@ -119,7 +119,7 @@ class StrategyTemplate:
 
 
 # =====================================================================
-# 6種の組み込みテンプレート
+# 12種の組み込みテンプレート（ロング6種 + ショート6種）
 # =====================================================================
 
 BUILTIN_TEMPLATES: Dict[str, StrategyTemplate] = {}
@@ -324,5 +324,208 @@ _register(StrategyTemplate(
     param_ranges=[
         ParameterRange("k_period", 10, 20, 5, "int"),
         ParameterRange("oversold", 15, 30, 5, "int"),
+    ],
+))
+
+
+# =====================================================================
+# ショートテンプレート（ロング版のミラー）
+# =====================================================================
+
+# 7. MA Crossover Short
+_register(StrategyTemplate(
+    name="ma_crossover_short",
+    description="SMA fast/slow 下抜けでショートエントリー",
+    config_template={
+        "name": "ma_crossover_short",
+        "side": "short",
+        "indicators": [
+            {"type": "sma", "period": "{fast_period}", "source": "close"},
+            {"type": "sma", "period": "{slow_period}", "source": "close"},
+        ],
+        "entry_conditions": [
+            {
+                "type": "crossover",
+                "fast": "sma_{fast_period}",
+                "slow": "sma_{slow_period}",
+                "direction": "below",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[
+        ParameterRange("fast_period", 10, 30, 5, "int"),
+        ParameterRange("slow_period", 40, 80, 10, "int"),
+    ],
+))
+
+# 8. RSI Reversal Short
+_register(StrategyTemplate(
+    name="rsi_reversal_short",
+    description="RSI買われすぎからの反落でショートエントリー",
+    config_template={
+        "name": "rsi_reversal_short",
+        "side": "short",
+        "indicators": [
+            {"type": "rsi", "period": "{rsi_period}"},
+        ],
+        "entry_conditions": [
+            {
+                "type": "threshold",
+                "column": "rsi_{rsi_period}",
+                "operator": ">",
+                "value": "{rsi_threshold}",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[
+        ParameterRange("rsi_period", 10, 30, 5, "int"),
+        ParameterRange("rsi_threshold", 65, 80, 5, "int"),
+    ],
+))
+
+# 9. BB Bounce Short
+_register(StrategyTemplate(
+    name="bb_bounce_short",
+    description="Bollinger Band上限タッチ + RSI高でショートエントリー",
+    config_template={
+        "name": "bb_bounce_short",
+        "side": "short",
+        "indicators": [
+            {"type": "bollinger", "period": "{bb_period}", "std_dev": 2.0},
+            {"type": "rsi", "period": 14},
+        ],
+        "entry_conditions": [
+            {
+                "type": "column_compare",
+                "column_a": "close",
+                "operator": ">=",
+                "column_b": "bb_upper_{bb_period}",
+            },
+            {
+                "type": "threshold",
+                "column": "rsi_14",
+                "operator": ">",
+                "value": "{rsi_threshold}",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[
+        ParameterRange("bb_period", 15, 25, 5, "int"),
+        ParameterRange("rsi_threshold", 60, 75, 5, "int"),
+    ],
+))
+
+# 10. MACD Signal Short
+_register(StrategyTemplate(
+    name="macd_signal_short",
+    description="MACDラインがシグナルラインを下抜け",
+    config_template={
+        "name": "macd_signal_short",
+        "side": "short",
+        "indicators": [
+            {"type": "macd", "fast": "{macd_fast}", "slow": "{macd_slow}", "signal": 9},
+        ],
+        "entry_conditions": [
+            {
+                "type": "crossover",
+                "fast": "macd_line",
+                "slow": "macd_signal",
+                "direction": "below",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[
+        ParameterRange("macd_fast", 8, 16, 2, "int"),
+        ParameterRange("macd_slow", 20, 30, 5, "int"),
+    ],
+))
+
+# 11. Volume Spike Short
+_register(StrategyTemplate(
+    name="volume_spike_short",
+    description="出来高急増 + 陽線からの反落でショートエントリー",
+    config_template={
+        "name": "volume_spike_short",
+        "side": "short",
+        "indicators": [
+            {"type": "rvol", "period": "{rvol_period}"},
+        ],
+        "entry_conditions": [
+            {
+                "type": "threshold",
+                "column": "rvol_{rvol_period}",
+                "operator": ">",
+                "value": "{rvol_threshold}",
+            },
+            {
+                "type": "candle",
+                "pattern": "bearish",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[
+        ParameterRange("rvol_period", 10, 30, 10, "int"),
+        ParameterRange("rvol_threshold", 2, 6, 1, "int"),
+    ],
+))
+
+# 12. Stochastic Reversal Short
+_register(StrategyTemplate(
+    name="stochastic_reversal_short",
+    description="Stochastic K/D 買われすぎゾーンでのクロス",
+    config_template={
+        "name": "stochastic_reversal_short",
+        "side": "short",
+        "indicators": [
+            {"type": "stochastic", "k_period": "{k_period}", "d_period": 3},
+        ],
+        "entry_conditions": [
+            {
+                "type": "threshold",
+                "column": "stoch_k_{k_period}",
+                "operator": ">",
+                "value": "{overbought}",
+            },
+            {
+                "type": "crossover",
+                "fast": "stoch_k_{k_period}",
+                "slow": "stoch_d_{k_period}",
+                "direction": "below",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[
+        ParameterRange("k_period", 10, 20, 5, "int"),
+        ParameterRange("overbought", 70, 85, 5, "int"),
     ],
 ))

@@ -20,7 +20,8 @@ TIMEFRAMES = ["1m", "5m", "15m", "1h", "4h", "1d"]
 
 def render_data_loader_page():
     """データローダーページを描画"""
-    st.header("Data Loader")
+    st.header("📂 Data Loader")
+    st.caption("OHLCVデータの読み込み・プレビュー")
 
     # ohlcv_dict の初期化 (TF -> OHLCVData)
     if "ohlcv_dict" not in st.session_state:

@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT_DIR))
 
 import streamlit as st
 
+from ui.components.styles import inject_custom_css
 from ui.pages.data_loader import render_data_loader_page
 from ui.pages.strategy_builder import render_strategy_builder_page
 from ui.pages.backtest_runner import render_backtest_runner_page
@@ -20,13 +21,26 @@ from ui.pages.trade_analysis import render_trade_analysis_page
 from ui.pages.optimizer_page import render_optimizer_page
 
 
+# ページ定義 (key, icon, label)
+PAGES = [
+    ("Data", "📂", "Data"),
+    ("Strategy", "🧩", "Strategy"),
+    ("Backtest", "▶️", "Backtest"),
+    ("Analysis", "🔍", "Analysis"),
+    ("Optimizer", "⚡", "Optimizer"),
+]
+
+
 def main():
     st.set_page_config(
-        page_title="Backtest System",
+        page_title="Backtest System v2",
         page_icon="📊",
         layout="wide",
         initial_sidebar_state="expanded",
     )
+
+    # カスタムCSS注入
+    inject_custom_css()
 
     # セッション初期化
     if "ohlcv_data" not in st.session_state:
@@ -38,36 +52,81 @@ def main():
     if "backtest_metrics" not in st.session_state:
         st.session_state.backtest_metrics = None
 
+    # ステータス判定
+    has_data = st.session_state.ohlcv_data is not None
+    has_strategy = (
+        "strategy_config" in st.session_state
+        and st.session_state.strategy_config.get("name")
+    )
+    has_result = st.session_state.backtest_result is not None
+    has_optimization = (
+        "optimization_result" in st.session_state
+        and st.session_state.optimization_result is not None
+    )
+
     # サイドバー
     with st.sidebar:
-        st.title("Backtest System")
+        st.markdown(
+            '<h2 style="margin-bottom:0;color:#e6edf3;">📊 Backtest System</h2>',
+            unsafe_allow_html=True,
+        )
+        st.caption("Strategy Optimizer & Analyzer")
         st.divider()
 
         page = st.radio(
             "Navigation",
-            options=["Data", "Strategy", "Backtest", "Analysis", "Optimizer"],
+            options=[p[0] for p in PAGES],
+            format_func=lambda x: next(
+                f"{icon} {label}" for key, icon, label in PAGES if key == x
+            ),
             index=0,
         )
 
         st.divider()
 
-        # ステータス表示
-        st.caption("Status")
-        data_status = "Loaded" if st.session_state.ohlcv_data else "Not loaded"
-        strategy_status = (
-            st.session_state.strategy_config.get("name", "Not set")
-            if "strategy_config" in st.session_state
-            else "Not set"
-        )
-        result_status = (
-            f"{len(st.session_state.backtest_result.trades)} trades"
-            if st.session_state.backtest_result
-            else "Not run"
-        )
+        # ステップインジケーター
+        steps = [
+            ("Data", has_data),
+            ("Strategy", has_strategy),
+            ("Backtest", has_result),
+            ("Optimizer", has_optimization),
+        ]
 
-        st.text(f"Data: {data_status}")
-        st.text(f"Strategy: {strategy_status}")
-        st.text(f"Result: {result_status}")
+        for step_name, done in steps:
+            dot_class = "done" if done else "todo"
+            label_class = "" if done else "dimmed"
+            check = "✓" if done else "○"
+            color = "#3fb950" if done else "#484f58"
+            st.markdown(
+                f'<div class="step-indicator">'
+                f'<span style="color:{color};font-size:0.9rem;">{check}</span>'
+                f'<span class="step-label {label_class}">{step_name}</span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+        st.divider()
+
+        # 詳細ステータス
+        if has_data:
+            ohlcv_dict = st.session_state.get("ohlcv_dict", {})
+            tfs = ", ".join(ohlcv_dict.keys()) if ohlcv_dict else ""
+            st.markdown(
+                f'<span class="status-badge status-ready">Data: {tfs}</span>',
+                unsafe_allow_html=True,
+            )
+        if has_strategy:
+            name = st.session_state.strategy_config.get("name", "")
+            st.markdown(
+                f'<span class="status-badge status-active">Strategy: {name}</span>',
+                unsafe_allow_html=True,
+            )
+        if has_result:
+            n_trades = len(st.session_state.backtest_result.trades)
+            st.markdown(
+                f'<span class="status-badge status-ready">Result: {n_trades} trades</span>',
+                unsafe_allow_html=True,
+            )
 
     # ページ描画
     if page == "Data":

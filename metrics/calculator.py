@@ -91,6 +91,60 @@ def calculate_metrics(
     )
 
 
+def calculate_metrics_from_arrays(
+    profit_pcts: np.ndarray,
+    durations: np.ndarray,
+    equity_curve: np.ndarray,
+) -> BacktestMetrics:
+    """numpy配列からメトリクスを算出（Numbaループ用）"""
+    if len(profit_pcts) == 0:
+        return _empty_metrics(equity_curve.tolist())
+
+    profits = profit_pcts
+    wins = profits[profits > 0]
+    losses = profits[profits < 0]
+
+    total_win = float(np.sum(wins)) if len(wins) > 0 else 0.0
+    total_loss = float(np.abs(np.sum(losses))) if len(losses) > 0 else 0.0
+
+    pf = total_win / total_loss if total_loss > 0 else float("inf")
+
+    running_max = np.maximum.accumulate(equity_curve)
+    drawdown = np.where(
+        running_max > 0,
+        (running_max - equity_curve) / running_max * 100,
+        0.0,
+    )
+    max_dd = float(np.max(drawdown)) if len(drawdown) > 0 else 0.0
+
+    returns = np.diff(equity_curve) / equity_curve[:-1] if len(equity_curve) > 1 else np.array([])
+    if len(returns) > 1 and np.std(returns) > 0:
+        sharpe = float(np.mean(returns) / np.std(returns) * np.sqrt(252))
+    else:
+        sharpe = 0.0
+
+    cumulative = np.cumsum(profits).tolist()
+
+    return BacktestMetrics(
+        total_trades=len(profits),
+        winning_trades=len(wins),
+        losing_trades=len(losses),
+        win_rate=len(wins) / len(profits) * 100,
+        total_profit_pct=float(np.sum(profits)),
+        avg_profit_pct=float(np.mean(wins)) if len(wins) > 0 else 0.0,
+        avg_loss_pct=float(np.mean(losses)) if len(losses) > 0 else 0.0,
+        profit_factor=pf,
+        max_drawdown_pct=max_dd,
+        sharpe_ratio=sharpe,
+        avg_duration_bars=float(np.mean(durations)),
+        best_trade_pct=float(np.max(profits)),
+        worst_trade_pct=float(np.min(profits)),
+        equity_curve=equity_curve.tolist(),
+        cumulative_returns=cumulative,
+        drawdown_series=drawdown.tolist(),
+    )
+
+
 def _empty_metrics(equity_curve: List[float] = None) -> BacktestMetrics:
     """トレードが0件の場合のデフォルト"""
     ec = equity_curve or [0.0]

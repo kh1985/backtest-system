@@ -15,7 +15,8 @@ from ui.components.chart import create_candlestick_chart
 
 def render_trade_analysis_page():
     """トレード分析ページを描画"""
-    st.header("Trade Analysis")
+    st.header("🔍 Trade Analysis")
+    st.caption("個別トレードの詳細分析・損益統計")
 
     if "backtest_result" not in st.session_state or st.session_state.backtest_result is None:
         st.warning("No backtest results. Run a backtest first.")

@@ -19,7 +19,8 @@ EXAMPLES_DIR = Path(__file__).resolve().parent.parent.parent / "strategy" / "exa
 
 def render_strategy_builder_page():
     """戦略ビルダーページを描画"""
-    st.header("Strategy Builder")
+    st.header("🧩 Strategy Builder")
+    st.caption("インジケーター・条件・決済ルールの設定")
 
     # セッション初期化
     if "strategy_config" not in st.session_state:

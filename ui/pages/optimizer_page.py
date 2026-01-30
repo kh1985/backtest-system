@@ -2,17 +2,21 @@
 Optimizerページ
 
 戦略テンプレート×パラメータのグリッドサーチ自動最適化。
-設定タブと結果タブで構成。
+設定 → 結果の2ビュー構成。最適化完了後は自動で結果表示に切り替え。
 """
 
+import os
+import time
 import streamlit as st
 import yaml
+import pandas as pd
 
 from data.base import Timeframe
 from analysis.trend import TrendDetector, TrendRegime
 from optimizer.templates import BUILTIN_TEMPLATES, ParameterRange
 from optimizer.scoring import ScoringWeights
 from optimizer.grid import GridSearchOptimizer
+from ui.components.styles import section_header, best_strategy_card, template_tag
 
 
 REGIME_OPTIONS = {
@@ -21,10 +25,16 @@ REGIME_OPTIONS = {
     "range": "Range",
 }
 
+REGIME_ICONS = {
+    "uptrend": "📈",
+    "downtrend": "📉",
+    "range": "↔️",
+}
+
 
 def render_optimizer_page():
     """Optimizerページを描画"""
-    st.header("Strategy Optimizer")
+    st.header("⚡ Strategy Optimizer")
 
     if "ohlcv_dict" not in st.session_state or not st.session_state.ohlcv_dict:
         st.warning("まず Data Loader でデータを読み込んでください。")
@@ -33,20 +43,46 @@ def render_optimizer_page():
     if "optimization_result" not in st.session_state:
         st.session_state.optimization_result = None
 
-    tab_config, tab_results = st.tabs(["Configuration", "Results"])
+    # 最適化完了後は自動で結果ビューを表示
+    if "optimizer_view" not in st.session_state:
+        st.session_state.optimizer_view = "config"
 
-    with tab_config:
-        _render_config_tab()
+    has_results = st.session_state.optimization_result is not None
 
-    with tab_results:
-        _render_results_tab()
+    # ビュー切り替え
+    col_nav1, col_nav2, col_spacer = st.columns([1, 1, 4])
+    with col_nav1:
+        if st.button(
+            "⚙️ Configuration",
+            type="primary" if st.session_state.optimizer_view == "config" else "secondary",
+            use_container_width=True,
+        ):
+            st.session_state.optimizer_view = "config"
+            st.rerun()
+    with col_nav2:
+        btn_label = f"📊 Results ({st.session_state.optimization_result.total_combinations})" if has_results else "📊 Results"
+        if st.button(
+            btn_label,
+            type="primary" if st.session_state.optimizer_view == "results" else "secondary",
+            disabled=not has_results,
+            use_container_width=True,
+        ):
+            st.session_state.optimizer_view = "results"
+            st.rerun()
+
+    st.divider()
+
+    if st.session_state.optimizer_view == "config":
+        _render_config_view()
+    else:
+        _render_results_view()
 
 
-def _render_config_tab():
-    """設定タブ"""
+def _render_config_view():
+    """設定ビュー"""
 
-    # --- トレンド検出設定 ---
-    st.subheader("1. Trend Detection")
+    # --- 1. トレンド検出 ---
+    section_header("📐", "Trend Detection", "トレンド判定の設定")
 
     loaded_tfs = list(st.session_state.ohlcv_dict.keys())
 
@@ -90,11 +126,10 @@ def _render_config_tab():
             "Target Regimes",
             options=list(REGIME_OPTIONS.keys()),
             default=list(REGIME_OPTIONS.keys()),
-            format_func=lambda x: REGIME_OPTIONS[x],
+            format_func=lambda x: f"{REGIME_ICONS.get(x, '')} {REGIME_OPTIONS[x]}",
             key="opt_regimes",
         )
 
-    # トレンド検出パラメータ
     with st.expander("Trend Detection Parameters", expanded=False):
         tcol1, tcol2, tcol3 = st.columns(3)
         with tcol1:
@@ -108,59 +143,95 @@ def _render_config_tab():
 
     st.divider()
 
-    # --- テンプレート選択 ---
-    st.subheader("2. Strategy Templates")
+    # --- 2. テンプレート選択（Long/Short分類） ---
+    section_header("🧩", "Strategy Templates", "テスト対象のテンプレート")
 
-    selected_templates = st.multiselect(
-        "Select Templates",
-        options=list(BUILTIN_TEMPLATES.keys()),
-        default=list(BUILTIN_TEMPLATES.keys()),
-        format_func=lambda x: f"{x} - {BUILTIN_TEMPLATES[x].description}",
-        key="opt_templates",
-    )
+    # Long/Shortに分類
+    long_templates = {k: v for k, v in BUILTIN_TEMPLATES.items()
+                      if v.config_template.get("side", "long") == "long"}
+    short_templates = {k: v for k, v in BUILTIN_TEMPLATES.items()
+                       if v.config_template.get("side", "long") == "short"}
 
-    # 各テンプレートのパラメータ範囲
+    col_long, col_short = st.columns(2)
+
+    with col_long:
+        st.markdown(
+            f'{template_tag("long")} **Long Templates** ({len(long_templates)})',
+            unsafe_allow_html=True,
+        )
+        selected_long = st.multiselect(
+            "Long",
+            options=list(long_templates.keys()),
+            default=list(long_templates.keys()),
+            format_func=lambda x: f"{x}",
+            key="opt_long_templates",
+            label_visibility="collapsed",
+        )
+
+    with col_short:
+        st.markdown(
+            f'{template_tag("short")} **Short Templates** ({len(short_templates)})',
+            unsafe_allow_html=True,
+        )
+        selected_short = st.multiselect(
+            "Short",
+            options=list(short_templates.keys()),
+            default=list(short_templates.keys()),
+            format_func=lambda x: f"{x}",
+            key="opt_short_templates",
+            label_visibility="collapsed",
+        )
+
+    selected_templates = selected_long + selected_short
+
+    # パラメータ範囲設定
     custom_ranges = {}
     total_combinations = 0
 
-    for tname in selected_templates:
-        template = BUILTIN_TEMPLATES[tname]
-        with st.expander(f"{tname} Parameters", expanded=False):
-            tpl_ranges = {}
-            for pr in template.param_ranges:
-                pcol1, pcol2, pcol3 = st.columns(3)
-                with pcol1:
-                    min_val = st.number_input(
-                        f"{pr.name} min",
-                        value=int(pr.min_val) if pr.param_type == "int" else pr.min_val,
-                        key=f"opt_{tname}_{pr.name}_min",
-                    )
-                with pcol2:
-                    max_val = st.number_input(
-                        f"{pr.name} max",
-                        value=int(pr.max_val) if pr.param_type == "int" else pr.max_val,
-                        key=f"opt_{tname}_{pr.name}_max",
-                    )
-                with pcol3:
-                    step = st.number_input(
-                        f"{pr.name} step",
-                        value=int(pr.step) if pr.param_type == "int" else pr.step,
-                        min_value=1 if pr.param_type == "int" else 0.01,
-                        key=f"opt_{tname}_{pr.name}_step",
-                    )
-                tpl_ranges[pr.name] = ParameterRange(
-                    pr.name, float(min_val), float(max_val), float(step), pr.param_type
-                )
+    if selected_templates:
+        st.caption(f"選択中: {len(selected_templates)} templates")
 
-            custom_ranges[tname] = tpl_ranges
-            count = template.combination_count(tpl_ranges)
-            total_combinations += count
-            st.caption(f"Combinations: {count}")
+        for tname in selected_templates:
+            template = BUILTIN_TEMPLATES[tname]
+            side = template.config_template.get("side", "long")
+            tag = template_tag(side)
+
+            with st.expander(f"{tname} Parameters", expanded=False):
+                tpl_ranges = {}
+                for pr in template.param_ranges:
+                    pcol1, pcol2, pcol3 = st.columns(3)
+                    with pcol1:
+                        min_val = st.number_input(
+                            f"{pr.name} min",
+                            value=int(pr.min_val) if pr.param_type == "int" else pr.min_val,
+                            key=f"opt_{tname}_{pr.name}_min",
+                        )
+                    with pcol2:
+                        max_val = st.number_input(
+                            f"{pr.name} max",
+                            value=int(pr.max_val) if pr.param_type == "int" else pr.max_val,
+                            key=f"opt_{tname}_{pr.name}_max",
+                        )
+                    with pcol3:
+                        step = st.number_input(
+                            f"{pr.name} step",
+                            value=int(pr.step) if pr.param_type == "int" else pr.step,
+                            min_value=1 if pr.param_type == "int" else 0.01,
+                            key=f"opt_{tname}_{pr.name}_step",
+                        )
+                    tpl_ranges[pr.name] = ParameterRange(
+                        pr.name, float(min_val), float(max_val), float(step), pr.param_type
+                    )
+
+                custom_ranges[tname] = tpl_ranges
+                count = template.combination_count(tpl_ranges)
+                total_combinations += count
+                st.caption(f"Combinations: **{count}**")
 
     st.divider()
 
-    # --- スコア重み ---
-    st.subheader("3. Scoring Weights")
+    # --- 3. スコア重み ---
+    section_header("🎯", "Scoring Weights", "複合スコアの重み配分")
 
     wcol1, wcol2, wcol3, wcol4 = st.columns(4)
     with wcol1:
@@ -174,14 +245,16 @@ def _render_config_tab():
 
     weight_sum = w_pf + w_wr + w_dd + w_sh
     if abs(weight_sum - 1.0) > 0.01:
-        st.warning(f"Weights sum = {weight_sum:.2f} (should be 1.0)")
+        st.warning(f"⚠️ Weights sum = {weight_sum:.2f} (should be 1.0)")
+    else:
+        st.caption(f"✓ Weights sum = {weight_sum:.2f}")
 
     st.divider()
 
-    # --- バックテスト設定 ---
-    st.subheader("4. Backtest Settings")
+    # --- 4. バックテスト設定 ---
+    section_header("⚙️", "Backtest Settings", "実行パラメータ")
 
-    bcol1, bcol2, bcol3 = st.columns(3)
+    bcol1, bcol2, bcol3, bcol4 = st.columns(4)
     with bcol1:
         initial_capital = st.number_input(
             "Initial Capital", value=10000.0, min_value=100.0, key="opt_capital"
@@ -194,15 +267,35 @@ def _render_config_tab():
         slippage = st.number_input(
             "Slippage (%)", value=0.0, min_value=0.0, step=0.01, key="opt_slippage"
         )
+    with bcol4:
+        max_workers = os.cpu_count() or 4
+        n_workers = st.number_input(
+            "Workers (並列数)",
+            value=max_workers,
+            min_value=1,
+            max_value=max_workers,
+            step=1,
+            key="opt_n_workers",
+            help=f"CPU: {max_workers}コア",
+        )
+
+    st.divider()
 
     # --- 実行 ---
     total_runs = total_combinations * len(target_regimes)
-    st.info(
-        f"Total combinations: {total_combinations} templates × "
-        f"{len(target_regimes)} regimes = **{total_runs}** runs"
-    )
 
-    if st.button("Run Optimization", type="primary", use_container_width=True):
+    # サマリーカード
+    scol1, scol2, scol3, scol4 = st.columns(4)
+    with scol1:
+        st.metric("Templates", f"{len(selected_templates)}")
+    with scol2:
+        st.metric("Regimes", f"{len(target_regimes)}")
+    with scol3:
+        st.metric("Combinations", f"{total_combinations:,}")
+    with scol4:
+        st.metric("Total Runs", f"{total_runs:,}")
+
+    if st.button("🚀 Run Optimization", type="primary", use_container_width=True):
         if not selected_templates:
             st.error("テンプレートを1つ以上選択してください")
             return
@@ -226,6 +319,7 @@ def _render_config_tab():
             adx_period=int(adx_period),
             adx_trend_th=float(adx_trend_th),
             adx_range_th=float(adx_range_th),
+            n_workers=int(n_workers),
         )
 
 
@@ -234,6 +328,7 @@ def _run_optimization(
     selected_templates, custom_ranges, scoring_weights,
     initial_capital, commission, slippage,
     ma_fast, ma_slow, adx_period, adx_trend_th, adx_range_th,
+    n_workers=1,
 ):
     """最適化を実行"""
     exec_ohlcv = st.session_state.ohlcv_dict[exec_tf]
@@ -268,7 +363,7 @@ def _run_optimization(
     else:
         exec_df["trend_regime"] = TrendRegime.RANGE.value
 
-    # config生成（テンプレートが_template_nameと_paramsを自動付加）
+    # config生成
     all_configs = []
     for tname in selected_templates:
         template = BUILTIN_TEMPLATES[tname]
@@ -287,34 +382,45 @@ def _run_optimization(
     progress_bar = st.progress(0, text="Starting optimization...")
 
     def on_progress(current, total, desc):
+        elapsed = time.time() - start_time
+        speed = current / elapsed if elapsed > 0 else 0
         progress_bar.progress(
             current / total,
-            text=f"({current}/{total}) {desc}",
+            text=f"⚡ {current}/{total} ({speed:.0f} runs/s) [{elapsed:.1f}s]",
         )
+
+    start_time = time.time()
 
     result_set = optimizer.run(
         df=exec_df,
         configs=all_configs,
         target_regimes=target_regimes,
         progress_callback=on_progress,
+        n_workers=n_workers,
     )
+
+    elapsed = time.time() - start_time
 
     result_set.symbol = exec_ohlcv.symbol
     result_set.execution_tf = exec_tf
     result_set.htf = htf or ""
 
     st.session_state.optimization_result = result_set
-    progress_bar.progress(1.0, text="Done!")
+    progress_bar.progress(1.0, text=f"✅ Done! [{elapsed:.1f}s]")
     st.success(
-        f"Optimization complete: {result_set.total_combinations} results"
+        f"**{result_set.total_combinations}** results in **{elapsed:.1f}s** "
+        f"(Workers: {n_workers})"
     )
+
+    # 自動で結果ビューに切り替え
+    st.session_state.optimizer_view = "results"
     st.rerun()
 
 
-def _render_results_tab():
-    """結果タブ"""
+def _render_results_view():
+    """結果ビュー"""
     if st.session_state.optimization_result is None:
-        st.info("まず Configuration タブで最適化を実行してください。")
+        st.info("まず Configuration で最適化を実行してください。")
         return
 
     from ui.components.optimizer_charts import (
@@ -325,28 +431,55 @@ def _render_results_tab():
 
     result_set = st.session_state.optimization_result
 
-    st.subheader(
-        f"Results: {result_set.symbol} | "
-        f"Exec: {result_set.execution_tf} | HTF: {result_set.htf}"
+    # ヘッダー情報
+    st.markdown(
+        f"**{result_set.symbol}** | "
+        f"Exec: `{result_set.execution_tf}` | "
+        f"HTF: `{result_set.htf}` | "
+        f"Total: **{result_set.total_combinations}** runs"
     )
 
-    # フィルター
-    fcol1, fcol2 = st.columns(2)
+    # --- ベスト戦略カード ---
+    best = result_set.best
+    if best:
+        best_strategy_card(
+            score=best.composite_score,
+            template=best.template_name,
+            regime=best.trend_regime,
+            params=best.param_str,
+        )
+
+    st.divider()
+
+    # --- フィルター ---
+    section_header("🔎", "Filter & Ranking")
+
+    fcol1, fcol2, fcol3 = st.columns([1, 1, 2])
     with fcol1:
         filter_regime = st.selectbox(
-            "Filter by Regime",
+            "Regime",
             options=["all"] + list(REGIME_OPTIONS.keys()),
-            format_func=lambda x: "All Regimes" if x == "all" else REGIME_OPTIONS.get(x, x),
+            format_func=lambda x: (
+                "All Regimes" if x == "all"
+                else f"{REGIME_ICONS.get(x, '')} {REGIME_OPTIONS.get(x, x)}"
+            ),
             key="result_filter_regime",
         )
     with fcol2:
-        templates_in_results = list(
-            set(e.template_name for e in result_set.entries)
-        )
+        templates_in_results = sorted(set(e.template_name for e in result_set.entries))
         filter_template = st.selectbox(
-            "Filter by Template",
+            "Template",
             options=["all"] + templates_in_results,
             key="result_filter_template",
+        )
+    with fcol3:
+        min_trades = st.slider(
+            "Min Trades",
+            min_value=0,
+            max_value=50,
+            value=0,
+            key="result_min_trades",
+            help="最低トレード数でフィルタ",
         )
 
     # フィルタリング
@@ -356,21 +489,72 @@ def _render_results_tab():
     if filter_template != "all":
         filtered = filtered.filter_template(filter_template)
 
+    # min trades フィルタ
+    if min_trades > 0:
+        from optimizer.results import OptimizationResultSet
+        filtered_entries = [e for e in filtered.entries if e.metrics.total_trades >= min_trades]
+        filtered = OptimizationResultSet(
+            entries=filtered_entries,
+            symbol=filtered.symbol,
+            execution_tf=filtered.execution_tf,
+            htf=filtered.htf,
+        )
+
     if not filtered.entries:
         st.warning("条件に一致する結果がありません。")
         return
 
-    # ランキングテーブル
-    st.subheader("Ranking")
+    st.caption(f"Showing {len(filtered.entries)} results")
+
+    # --- ランキングテーブル（スタイル付き） ---
     ranking_df = filtered.to_dataframe()
+
+    # カラム設定でスタイリング
+    column_config = {
+        "score": st.column_config.ProgressColumn(
+            "Score",
+            min_value=0,
+            max_value=1,
+            format="%.4f",
+        ),
+        "win_rate": st.column_config.NumberColumn(
+            "Win Rate %",
+            format="%.1f%%",
+        ),
+        "profit_factor": st.column_config.NumberColumn(
+            "PF",
+            format="%.2f",
+        ),
+        "total_pnl": st.column_config.NumberColumn(
+            "Total P/L %",
+            format="%.2f%%",
+        ),
+        "max_dd": st.column_config.NumberColumn(
+            "Max DD %",
+            format="%.2f%%",
+        ),
+        "sharpe": st.column_config.NumberColumn(
+            "Sharpe",
+            format="%.2f",
+        ),
+        "trades": st.column_config.NumberColumn(
+            "Trades",
+            format="%d",
+        ),
+    }
+
     st.dataframe(
         ranking_df,
         use_container_width=True,
         hide_index=False,
+        column_config=column_config,
+        height=400,
     )
 
-    # チャート
-    st.subheader("Charts")
+    st.divider()
+
+    # --- チャート ---
+    section_header("📊", "Charts")
 
     chart_col1, chart_col2 = st.columns(2)
     with chart_col1:
@@ -380,13 +564,15 @@ def _render_results_tab():
         dist_fig = create_regime_distribution_chart(filtered)
         st.plotly_chart(dist_fig, use_container_width=True)
 
-    # エクイティカーブオーバーレイ
+    # --- エクイティカーブオーバーレイ ---
     ranked_entries = filtered.ranked()
     entries_with_result = [
         e for e in ranked_entries if e.backtest_result is not None
     ]
     if entries_with_result:
-        st.subheader("Equity Curve Overlay")
+        st.divider()
+        section_header("📈", "Equity Curve Overlay", f"Top {min(len(entries_with_result), 10)}")
+
         top_n = st.slider(
             "Top N to display", 1, min(20, len(entries_with_result)),
             min(5, len(entries_with_result)), key="equity_top_n"
@@ -394,22 +580,22 @@ def _render_results_tab():
         equity_fig = create_equity_overlay(entries_with_result, max_entries=top_n)
         st.plotly_chart(equity_fig, use_container_width=True)
 
-    # ベスト戦略のYAMLエクスポート
-    st.subheader("Export Best Strategy")
-    best = filtered.best
-    if best:
-        st.metric("Best Score", f"{best.composite_score:.4f}")
-        st.caption(
-            f"Template: {best.template_name} | "
-            f"Regime: {best.trend_regime} | "
-            f"Params: {best.param_str}"
-        )
+    st.divider()
 
+    # --- YAMLエクスポート ---
+    section_header("💾", "Export Best Strategy")
+
+    if best:
         yaml_str = yaml.dump(best.config, default_flow_style=False, allow_unicode=True)
-        st.code(yaml_str, language="yaml")
-        st.download_button(
-            "Download YAML",
-            data=yaml_str,
-            file_name=f"best_strategy_{best.template_name}.yaml",
-            mime="text/yaml",
-        )
+
+        col_yaml, col_dl = st.columns([3, 1])
+        with col_yaml:
+            st.code(yaml_str, language="yaml")
+        with col_dl:
+            st.download_button(
+                "📥 Download YAML",
+                data=yaml_str,
+                file_name=f"best_strategy_{best.template_name}.yaml",
+                mime="text/yaml",
+                use_container_width=True,
+            )

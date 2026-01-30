@@ -20,7 +20,8 @@ from ui.components.trade_table import render_trade_table
 
 def render_backtest_runner_page():
     """バックテスト実行ページを描画"""
-    st.header("Backtest Runner")
+    st.header("▶️ Backtest Runner")
+    st.caption("戦略のバックテスト実行・結果表示")
 
     # データと戦略の確認
     has_data = "ohlcv_data" in st.session_state and st.session_state.ohlcv_data is not None
