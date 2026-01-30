@@ -46,18 +46,13 @@ def render_data_loader_page():
         _render_datasets_summary()
         st.divider()
 
-    tab_csv, tab_binance, tab_exchange = st.tabs(
-        ["TradingView CSV", "Binance CSV", "Exchange API"]
-    )
-
-    with tab_csv:
-        _render_csv_tab()
+    tab_binance, tab_csv = st.tabs(["Binance CSV", "TradingView CSV"])
 
     with tab_binance:
         _render_binance_tab()
 
-    with tab_exchange:
-        _render_exchange_tab()
+    with tab_csv:
+        _render_csv_tab()
 
     # 選択中データのプレビュー
     if st.session_state.datasets:
@@ -185,155 +180,187 @@ def _load_single_csv(loader, tf_str, csv_path, uploaded, symbol):
     return None
 
 
+def _detect_tf_from_data(df: pd.DataFrame):
+    """OHLCVデータのタイムスタンプ差分からTFを自動判定"""
+    if "datetime" not in df.columns or len(df) < 3:
+        return None
+    diffs = df["datetime"].head(100).diff().dropna()
+    if diffs.empty:
+        return None
+    mode_diff = diffs.mode().iloc[0]
+    minutes = mode_diff.total_seconds() / 60
+    tf_map = {
+        1: Timeframe.M1, 5: Timeframe.M5, 15: Timeframe.M15,
+        60: Timeframe.H1, 240: Timeframe.H4, 1440: Timeframe.D1,
+    }
+    closest = min(tf_map.keys(), key=lambda x: abs(x - minutes))
+    return tf_map[closest]
+
+
 def _render_binance_tab():
-    """Binance Data CSV/ZIPインポートタブ"""
+    """Binance Data CSV/ZIPインポート（一括読み込み対応）"""
     st.subheader("Binance Data CSV/ZIP Import")
-    st.caption("data.binance.vision からダウンロードしたCSV/ZIPファイルを読み込みます")
-
-    symbol = st.text_input(
-        "Symbol",
-        value="",
-        placeholder="WLDUSDT",
-        key="binance_symbol",
-    )
-
-    st.markdown("**各タイムフレームのファイルを設定してください**")
+    st.caption("ディレクトリ指定 or ドラッグ＆ドロップで一括読み込み（TFはデータから自動判定）")
 
     loader = BinanceCSVLoader()
-    entries = []
 
-    for tf_str in TIMEFRAMES:
-        with st.expander(f"{tf_str}", expanded=False):
-            col1, col2 = st.columns([3, 1])
-            with col1:
-                file_path = st.text_input(
-                    "File Path (CSV or ZIP)",
-                    placeholder=rf"C:\path\to\WLDUSDT-{tf_str}-2025-01.csv",
-                    key=f"binance_path_{tf_str}",
-                )
-            with col2:
-                uploaded = st.file_uploader(
-                    "Upload",
-                    type=["csv", "zip"],
-                    key=f"binance_upload_{tf_str}",
-                )
+    # --- ディレクトリスキャン ---
+    col_dir, col_scan = st.columns([5, 1])
+    with col_dir:
+        dir_path = st.text_input(
+            "Directory Path",
+            value="inputdata",
+            key="binance_dir",
+        )
+    with col_scan:
+        st.markdown("<br>", unsafe_allow_html=True)
+        scan_clicked = st.button("Scan")
 
-            entries.append((tf_str, file_path, uploaded))
-
-    if st.button(
-        "Load Binance CSV", type="primary", use_container_width=True
-    ):
-        loaded_count = 0
-        for tf_str, file_path, uploaded in entries:
-            try:
-                ohlcv = _load_single_binance(
-                    loader, tf_str, file_path, uploaded, symbol
-                )
-                if ohlcv:
-                    _add_to_datasets(ohlcv)
-                    loaded_count += 1
-            except Exception as e:
-                st.error(f"[{tf_str}] Error: {e}")
-
-        if loaded_count > 0:
-            st.success(f"{loaded_count} timeframe(s) loaded.")
-            st.rerun()
+    if scan_clicked and dir_path:
+        p = Path(dir_path)
+        if not p.is_absolute():
+            p = Path.cwd() / p
+        if p.exists() and p.is_dir():
+            files = sorted(list(p.glob("*.csv")) + list(p.glob("*.zip")))
+            if files:
+                groups = {}
+                for f in files:
+                    sym = loader.detect_symbol(f.name)
+                    if sym not in groups:
+                        groups[sym] = []
+                    groups[sym].append(str(f))
+                st.session_state.binance_scan = groups
+            else:
+                st.warning("CSV/ZIPファイルが見つかりません")
         else:
-            st.warning(
-                "読み込むファイルがありません。"
-                "パスを入力するかファイルをアップロードしてください。"
+            st.error(f"ディレクトリが見つかりません: {p}")
+
+    # --- ファイルアップロード（複数対応）---
+    uploaded = st.file_uploader(
+        "またはドラッグ＆ドロップ（複数可）",
+        type=["csv", "zip"],
+        accept_multiple_files=True,
+        key="binance_multi_upload",
+    )
+
+    # --- スキャン結果表示＆ロード ---
+    scan = st.session_state.get("binance_scan")
+    if scan:
+        total = sum(len(v) for v in scan.values())
+        st.markdown(f"**{total} ファイル / {len(scan)} シンボル検出**")
+
+        selected = st.multiselect(
+            "読み込むシンボル",
+            options=list(scan.keys()),
+            default=list(scan.keys()),
+            key="binance_syms",
+        )
+
+        if selected:
+            rows = []
+            for sym in selected:
+                for fp in scan[sym]:
+                    fname = Path(fp).name
+                    tf = loader.detect_timeframe(fname)
+                    rows.append({
+                        "Symbol": sym,
+                        "File": fname,
+                        "TF (filename)": tf.value if tf else "?",
+                    })
+            st.dataframe(
+                pd.DataFrame(rows), use_container_width=True, hide_index=True
             )
+            st.caption("※ TFはCSVデータのタイムスタンプから自動判定します（上記は参考値）")
+
+        col_load, col_clear = st.columns([3, 1])
+        with col_load:
+            if selected and st.button(
+                "Load Selected", type="primary", use_container_width=True
+            ):
+                _bulk_load_paths(loader, scan, selected)
+        with col_clear:
+            if st.button("Clear", use_container_width=True):
+                if "binance_scan" in st.session_state:
+                    del st.session_state.binance_scan
+                st.rerun()
+
+    elif uploaded:
+        st.markdown(f"**{len(uploaded)} ファイル選択済み**")
+        if st.button(
+            "Load Uploaded", type="primary", use_container_width=True
+        ):
+            _bulk_load_uploads(loader, uploaded)
 
 
-def _load_single_binance(loader, tf_str, file_path, uploaded, symbol):
-    """1つのTFのBinance CSVを読み込む。入力がなければNone"""
+def _bulk_load_paths(loader, scan, selected_symbols):
+    """ディレクトリスキャン結果からの一括読み込み"""
+    files = []
+    for sym in selected_symbols:
+        files.extend(scan[sym])
+
+    progress = st.progress(0, text="読み込み中...")
+    loaded = 0
+    errors = []
+
+    for i, fp in enumerate(files):
+        try:
+            ohlcv = loader.load(fp)
+            detected_tf = _detect_tf_from_data(ohlcv.df)
+            if detected_tf:
+                ohlcv.timeframe = detected_tf
+            _add_to_datasets(ohlcv)
+            loaded += 1
+        except Exception as e:
+            errors.append(f"[{Path(fp).name}] {e}")
+        progress.progress((i + 1) / len(files), text=f"{i+1}/{len(files)}")
+
+    progress.empty()
+    for err in errors:
+        st.error(err)
+    if loaded:
+        st.success(f"{loaded} ファイル読み込み完了")
+        if "binance_scan" in st.session_state:
+            del st.session_state.binance_scan
+        st.rerun()
+
+
+def _bulk_load_uploads(loader, uploaded_files):
+    """アップロードファイルからの一括読み込み"""
     import tempfile
     import os
 
-    tf = Timeframe.from_str(tf_str)
+    progress = st.progress(0, text="読み込み中...")
+    loaded = 0
+    errors = []
 
-    if uploaded is not None:
-        suffix = ".zip" if uploaded.name.endswith(".zip") else ".csv"
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-            tmp.write(uploaded.getvalue())
-            tmp_path = tmp.name
-        sym = symbol or loader.detect_symbol(uploaded.name)
-        ohlcv = loader.load(tmp_path, symbol=sym, timeframe=tf)
-        os.unlink(tmp_path)
-        return ohlcv
-
-    elif file_path:
-        sym = symbol or loader.detect_symbol(Path(file_path).name)
-        return loader.load(file_path, symbol=sym, timeframe=tf)
-
-    return None
-
-
-def _render_exchange_tab():
-    """取引所APIタブ"""
-    st.subheader("Exchange API (ccxt)")
-
-    col1, col2 = st.columns(2)
-    with col1:
-        exchange = st.selectbox(
-            "Exchange",
-            options=["mexc", "binance", "bybit"],
-            index=0,
-        )
-        symbol = st.text_input(
-            "Symbol (Exchange format)",
-            value="WLD/USDT",
-            placeholder="BTC/USDT",
-        )
-    with col2:
-        timeframe = st.selectbox(
-            "Timeframe ",
-            options=TIMEFRAMES,
-            index=0,
-            key="exchange_tf",
-        )
-        limit = st.number_input(
-            "Bars to fetch",
-            min_value=100,
-            max_value=10000,
-            value=1000,
-            step=100,
-        )
-
-    col3, col4 = st.columns(2)
-    with col3:
-        start_date = st.date_input("Start Date")
-    with col4:
-        end_date = st.date_input("End Date")
-
-    if st.button("Fetch Data", type="primary"):
+    for i, uf in enumerate(uploaded_files):
         try:
-            from data.exchange_fetcher import ExchangeFetcher
-            from config.settings import API_KEY, API_SECRET
+            suffix = ".zip" if uf.name.endswith(".zip") else ".csv"
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                tmp.write(uf.getvalue())
+                tmp_path = tmp.name
 
-            fetcher = ExchangeFetcher(
-                exchange_id=exchange,
-                api_key=API_KEY if API_KEY else None,
-                api_secret=API_SECRET if API_SECRET else None,
-            )
-            tf = Timeframe.from_str(timeframe)
-            ohlcv = fetcher.load(
-                symbol=symbol,
-                timeframe=tf,
-                limit=limit,
-            )
+            sym = loader.detect_symbol(uf.name)
+            ohlcv = loader.load(tmp_path, symbol=sym)
+            os.unlink(tmp_path)
 
+            detected_tf = _detect_tf_from_data(ohlcv.df)
+            if detected_tf:
+                ohlcv.timeframe = detected_tf
             _add_to_datasets(ohlcv)
-            st.success(
-                f"Fetched: {ohlcv.symbol} ({ohlcv.timeframe.value}) "
-                f"- {ohlcv.bars} bars"
-            )
-            st.rerun()
-
-        except ImportError:
-            st.error("ccxt is not installed. Run: pip install ccxt")
+            loaded += 1
         except Exception as e:
-            st.error(f"Error: {e}")
+            errors.append(f"[{uf.name}] {e}")
+        progress.progress(
+            (i + 1) / len(uploaded_files), text=f"{i+1}/{len(uploaded_files)}"
+        )
+
+    progress.empty()
+    for err in errors:
+        st.error(err)
+    if loaded:
+        st.success(f"{loaded} ファイル読み込み完了")
+        st.rerun()
 
 
 def _render_data_preview():
