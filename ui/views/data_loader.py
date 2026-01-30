@@ -319,39 +319,45 @@ def _render_exchange_tab():
 def _render_data_preview():
     """読み込み済みデータのプレビュー"""
     st.divider()
-    st.subheader("Loaded Data")
+    st.subheader("📋 Loaded Data")
 
-    # 読み込み済みTFの一覧
-    loaded_tfs = list(st.session_state.ohlcv_dict.keys())
+    ohlcv_dict = st.session_state.ohlcv_dict
+    loaded_tfs = list(ohlcv_dict.keys())
 
-    cols = st.columns(len(loaded_tfs))
-    for i, tf_str in enumerate(loaded_tfs):
-        ohlcv = st.session_state.ohlcv_dict[tf_str]
-        with cols[i]:
-            st.metric(
-                label=f"{tf_str}",
-                value=f"{ohlcv.bars} bars",
-                help=f"{ohlcv.symbol} | {ohlcv.source}",
-            )
+    # データ一覧テーブル
+    import pandas as pd
+    rows = []
+    for tf_str in loaded_tfs:
+        ohlcv = ohlcv_dict[tf_str]
+        rows.append({
+            "TF": tf_str,
+            "Symbol": getattr(ohlcv, "symbol", "?"),
+            "Bars": f"{ohlcv.bars:,}",
+            "Start": str(ohlcv.start_time)[:19] if ohlcv.start_time else "",
+            "End": str(ohlcv.end_time)[:19] if ohlcv.end_time else "",
+            "Source": getattr(ohlcv, "source", ""),
+        })
+    summary_df = pd.DataFrame(rows)
+    st.dataframe(summary_df, use_container_width=True, hide_index=True)
+
+    # シンボル混在チェック
+    symbols = set(row["Symbol"] for row in rows)
+    if len(symbols) > 1:
+        st.warning(
+            f"⚠️ 複数シンボルが混在: {', '.join(symbols)}  \n"
+            "Optimizerは同一シンボルのデータのみ対応しています。"
+        )
 
     # チャート表示するTFを選択
     selected_tf = st.selectbox(
         "Preview Timeframe",
         options=loaded_tfs,
+        format_func=lambda x: f"{x} - {getattr(ohlcv_dict[x], 'symbol', '?')}",
         index=0,
         key="preview_tf",
     )
 
-    ohlcv = st.session_state.ohlcv_dict[selected_tf]
-
-    # 基本情報
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.caption(f"Symbol: {ohlcv.symbol}")
-    with col2:
-        st.caption(f"Start: {str(ohlcv.start_time)[:19]}" if ohlcv.start_time else "")
-    with col3:
-        st.caption(f"End: {str(ohlcv.end_time)[:19]}" if ohlcv.end_time else "")
+    ohlcv = ohlcv_dict[selected_tf]
 
     # チャート
     max_bars = st.slider(

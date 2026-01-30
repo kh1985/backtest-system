@@ -107,11 +107,32 @@ def main():
         # 詳細ステータス
         if has_data:
             ohlcv_dict = st.session_state.get("ohlcv_dict", {})
-            tfs = ", ".join(ohlcv_dict.keys()) if ohlcv_dict else ""
-            st.markdown(
-                f'<span class="status-badge status-ready">Data: {tfs}</span>',
-                unsafe_allow_html=True,
-            )
+            if ohlcv_dict:
+                # シンボル別にグループ化して表示
+                symbol_tfs = {}
+                for tf_str, ohlcv in ohlcv_dict.items():
+                    sym = getattr(ohlcv, "symbol", "?")
+                    if sym not in symbol_tfs:
+                        symbol_tfs[sym] = []
+                    symbol_tfs[sym].append((tf_str, ohlcv.bars))
+
+                for sym, tfs_info in symbol_tfs.items():
+                    tf_labels = ", ".join(
+                        f"{tf}({bars:,})" for tf, bars in tfs_info
+                    )
+                    st.markdown(
+                        f'<span class="status-badge status-ready">'
+                        f'{sym}: {tf_labels}</span>',
+                        unsafe_allow_html=True,
+                    )
+
+                # シンボル混在警告
+                if len(symbol_tfs) > 1:
+                    st.warning(
+                        "⚠️ 複数シンボルが混在しています。"
+                        "Optimizerは1シンボルのみ対応。"
+                    )
+
         if has_strategy:
             name = getattr(st.session_state.strategy, "name", "")
             st.markdown(
