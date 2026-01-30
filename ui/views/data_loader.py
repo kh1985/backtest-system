@@ -2,7 +2,7 @@
 データローダーページ
 
 CSV読み込み / 取引所APIからのフェッチ / プレビュー表示
-複数タイムフレームのCSVを同時に読み込み可能。
+アップロードしたデータはシンボル別に datasets に蓄積。
 """
 
 import streamlit as st
@@ -18,14 +18,33 @@ from ui.components.chart import create_candlestick_chart
 TIMEFRAMES = ["1m", "5m", "15m", "1h", "4h", "1d"]
 
 
+def _add_to_datasets(ohlcv):
+    """OHLCVDataを datasets に追加（シンボル別に蓄積）"""
+    sym = getattr(ohlcv, "symbol", "UNKNOWN")
+    tf_str = ohlcv.timeframe.value if hasattr(ohlcv, "timeframe") else "?"
+
+    if sym not in st.session_state.datasets:
+        st.session_state.datasets[sym] = {}
+    st.session_state.datasets[sym][tf_str] = ohlcv
+
+    # 後方互換: ohlcv_dict と ohlcv_data も更新
+    st.session_state.ohlcv_dict[tf_str] = ohlcv
+    st.session_state.ohlcv_data = ohlcv
+
+
 def render_data_loader_page():
     """データローダーページを描画"""
     st.header("📂 Data Loader")
     st.caption("OHLCVデータの読み込み・プレビュー")
 
-    # ohlcv_dict の初期化 (TF -> OHLCVData)
+    # ohlcv_dict の初期化 (後方互換)
     if "ohlcv_dict" not in st.session_state:
         st.session_state.ohlcv_dict = {}
+
+    # 読み込み済みデータセットの一覧（ページ上部に表示）
+    if st.session_state.datasets:
+        _render_datasets_summary()
+        st.divider()
 
     tab_csv, tab_binance, tab_exchange = st.tabs(
         ["TradingView CSV", "Binance CSV", "Exchange API"]
@@ -40,9 +59,55 @@ def render_data_loader_page():
     with tab_exchange:
         _render_exchange_tab()
 
-    # 読み込み済みデータのプレビュー
-    if st.session_state.ohlcv_dict:
+    # 選択中データのプレビュー
+    if st.session_state.datasets:
         _render_data_preview()
+
+
+def _render_datasets_summary():
+    """全データセットの一覧"""
+    st.subheader("📦 Loaded Datasets")
+
+    datasets = st.session_state.datasets
+    rows = []
+    for sym, tf_dict in datasets.items():
+        for tf_str, ohlcv in tf_dict.items():
+            rows.append({
+                "Symbol": sym,
+                "TF": tf_str,
+                "Bars": f"{ohlcv.bars:,}",
+                "Start": str(ohlcv.start_time)[:19] if ohlcv.start_time else "",
+                "End": str(ohlcv.end_time)[:19] if ohlcv.end_time else "",
+                "Source": getattr(ohlcv, "source", ""),
+            })
+
+    if rows:
+        summary_df = pd.DataFrame(rows)
+        st.dataframe(summary_df, use_container_width=True, hide_index=True)
+
+        # 個別削除
+        col_del1, col_del2, col_del3 = st.columns([2, 2, 1])
+        with col_del1:
+            del_sym = st.selectbox(
+                "Delete dataset",
+                options=[""] + list(datasets.keys()),
+                format_func=lambda x: "Select..." if x == "" else x,
+                key="del_dataset_sym",
+            )
+        with col_del2:
+            if del_sym:
+                st.caption(
+                    f"{del_sym}: {', '.join(datasets[del_sym].keys())}"
+                )
+        with col_del3:
+            if del_sym and st.button("🗑 Delete", use_container_width=True):
+                del st.session_state.datasets[del_sym]
+                # ohlcv_dict からも該当シンボルのTFを削除
+                for tf_str in list(st.session_state.ohlcv_dict.keys()):
+                    ohlcv = st.session_state.ohlcv_dict[tf_str]
+                    if getattr(ohlcv, "symbol", "") == del_sym:
+                        del st.session_state.ohlcv_dict[tf_str]
+                st.rerun()
 
 
 def _render_csv_tab():
@@ -72,47 +137,26 @@ def _render_csv_tab():
                     key=f"csv_upload_{tf_str}",
                 )
 
-            # 既に読み込み済みなら表示
-            if tf_str in st.session_state.ohlcv_dict:
-                ohlcv = st.session_state.ohlcv_dict[tf_str]
-                st.caption(f"Loaded: {ohlcv.bars} bars ({ohlcv.start_time} ~ {ohlcv.end_time})")
-
             entries.append((tf_str, csv_path, uploaded))
 
-    col_load, col_clear = st.columns(2)
+    if st.button("Load All CSV", type="primary", use_container_width=True):
+        loaded_count = 0
+        for tf_str, csv_path, uploaded in entries:
+            try:
+                ohlcv = _load_single_csv(
+                    loader, tf_str, csv_path, uploaded, symbol
+                )
+                if ohlcv:
+                    _add_to_datasets(ohlcv)
+                    loaded_count += 1
+            except Exception as e:
+                st.error(f"[{tf_str}] Error: {e}")
 
-    with col_load:
-        if st.button("Load All CSV", type="primary", use_container_width=True):
-            loaded_count = 0
-            for tf_str, csv_path, uploaded in entries:
-                try:
-                    ohlcv = _load_single_csv(
-                        loader, tf_str, csv_path, uploaded, symbol
-                    )
-                    if ohlcv:
-                        st.session_state.ohlcv_dict[tf_str] = ohlcv
-                        # 後方互換: 最小TFを ohlcv_data にも設定
-                        st.session_state.ohlcv_data = ohlcv
-                        loaded_count += 1
-                except Exception as e:
-                    st.error(f"[{tf_str}] Error: {e}")
-
-            if loaded_count > 0:
-                # ohlcv_data には最小TFを設定
-                for tf_str in TIMEFRAMES:
-                    if tf_str in st.session_state.ohlcv_dict:
-                        st.session_state.ohlcv_data = st.session_state.ohlcv_dict[tf_str]
-                        break
-                st.success(f"{loaded_count} timeframe(s) loaded.")
-                st.rerun()
-            else:
-                st.warning("読み込むCSVがありません。パスを入力するかファイルをアップロードしてください。")
-
-    with col_clear:
-        if st.button("Clear All", use_container_width=True):
-            st.session_state.ohlcv_dict = {}
-            st.session_state.ohlcv_data = None
+        if loaded_count > 0:
+            st.success(f"{loaded_count} timeframe(s) loaded.")
             st.rerun()
+        else:
+            st.warning("読み込むCSVがありません。パスを入力するかファイルをアップロードしてください。")
 
 
 def _load_single_csv(loader, tf_str, csv_path, uploaded, symbol):
@@ -174,54 +218,31 @@ def _render_binance_tab():
                     key=f"binance_upload_{tf_str}",
                 )
 
-            if tf_str in st.session_state.ohlcv_dict:
-                ohlcv = st.session_state.ohlcv_dict[tf_str]
-                st.caption(
-                    f"Loaded: {ohlcv.bars} bars "
-                    f"({ohlcv.start_time} ~ {ohlcv.end_time})"
-                )
-
             entries.append((tf_str, file_path, uploaded))
 
-    col_load, col_clear = st.columns(2)
-
-    with col_load:
-        if st.button(
-            "Load Binance CSV", type="primary", use_container_width=True
-        ):
-            loaded_count = 0
-            for tf_str, file_path, uploaded in entries:
-                try:
-                    ohlcv = _load_single_binance(
-                        loader, tf_str, file_path, uploaded, symbol
-                    )
-                    if ohlcv:
-                        st.session_state.ohlcv_dict[tf_str] = ohlcv
-                        st.session_state.ohlcv_data = ohlcv
-                        loaded_count += 1
-                except Exception as e:
-                    st.error(f"[{tf_str}] Error: {e}")
-
-            if loaded_count > 0:
-                for tf_str in TIMEFRAMES:
-                    if tf_str in st.session_state.ohlcv_dict:
-                        st.session_state.ohlcv_data = (
-                            st.session_state.ohlcv_dict[tf_str]
-                        )
-                        break
-                st.success(f"{loaded_count} timeframe(s) loaded.")
-                st.rerun()
-            else:
-                st.warning(
-                    "読み込むファイルがありません。"
-                    "パスを入力するかファイルをアップロードしてください。"
+    if st.button(
+        "Load Binance CSV", type="primary", use_container_width=True
+    ):
+        loaded_count = 0
+        for tf_str, file_path, uploaded in entries:
+            try:
+                ohlcv = _load_single_binance(
+                    loader, tf_str, file_path, uploaded, symbol
                 )
+                if ohlcv:
+                    _add_to_datasets(ohlcv)
+                    loaded_count += 1
+            except Exception as e:
+                st.error(f"[{tf_str}] Error: {e}")
 
-    with col_clear:
-        if st.button("Clear All", use_container_width=True, key="binance_clear"):
-            st.session_state.ohlcv_dict = {}
-            st.session_state.ohlcv_data = None
+        if loaded_count > 0:
+            st.success(f"{loaded_count} timeframe(s) loaded.")
             st.rerun()
+        else:
+            st.warning(
+                "読み込むファイルがありません。"
+                "パスを入力するかファイルをアップロードしてください。"
+            )
 
 
 def _load_single_binance(loader, tf_str, file_path, uploaded, symbol):
@@ -302,8 +323,7 @@ def _render_exchange_tab():
                 limit=limit,
             )
 
-            st.session_state.ohlcv_dict[timeframe] = ohlcv
-            st.session_state.ohlcv_data = ohlcv
+            _add_to_datasets(ohlcv)
             st.success(
                 f"Fetched: {ohlcv.symbol} ({ohlcv.timeframe.value}) "
                 f"- {ohlcv.bars} bars"
@@ -317,47 +337,44 @@ def _render_exchange_tab():
 
 
 def _render_data_preview():
-    """読み込み済みデータのプレビュー"""
+    """選択したデータセットのプレビュー"""
     st.divider()
-    st.subheader("📋 Loaded Data")
+    st.subheader("📊 Data Preview")
 
-    ohlcv_dict = st.session_state.ohlcv_dict
-    loaded_tfs = list(ohlcv_dict.keys())
+    datasets = st.session_state.datasets
+    symbols = list(datasets.keys())
 
-    # データ一覧テーブル
-    import pandas as pd
-    rows = []
-    for tf_str in loaded_tfs:
-        ohlcv = ohlcv_dict[tf_str]
-        rows.append({
-            "TF": tf_str,
-            "Symbol": getattr(ohlcv, "symbol", "?"),
-            "Bars": f"{ohlcv.bars:,}",
-            "Start": str(ohlcv.start_time)[:19] if ohlcv.start_time else "",
-            "End": str(ohlcv.end_time)[:19] if ohlcv.end_time else "",
-            "Source": getattr(ohlcv, "source", ""),
-        })
-    summary_df = pd.DataFrame(rows)
-    st.dataframe(summary_df, use_container_width=True, hide_index=True)
+    # シンボル選択
+    selected_sym = st.selectbox(
+        "Symbol",
+        options=symbols,
+        index=0,
+        key="preview_symbol",
+    )
 
-    # シンボル混在チェック
-    symbols = set(row["Symbol"] for row in rows)
-    if len(symbols) > 1:
-        st.warning(
-            f"⚠️ 複数シンボルが混在: {', '.join(symbols)}  \n"
-            "Optimizerは同一シンボルのデータのみ対応しています。"
-        )
+    tf_dict = datasets[selected_sym]
+    tfs = list(tf_dict.keys())
 
-    # チャート表示するTFを選択
+    # TF選択
     selected_tf = st.selectbox(
-        "Preview Timeframe",
-        options=loaded_tfs,
-        format_func=lambda x: f"{x} - {getattr(ohlcv_dict[x], 'symbol', '?')}",
+        "Timeframe",
+        options=tfs,
         index=0,
         key="preview_tf",
     )
 
-    ohlcv = ohlcv_dict[selected_tf]
+    ohlcv = tf_dict[selected_tf]
+
+    # 基本情報
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Symbol", ohlcv.symbol)
+    with col2:
+        st.metric("Bars", f"{ohlcv.bars:,}")
+    with col3:
+        st.caption(f"Start: {str(ohlcv.start_time)[:19]}" if ohlcv.start_time else "")
+    with col4:
+        st.caption(f"End: {str(ohlcv.end_time)[:19]}" if ohlcv.end_time else "")
 
     # チャート
     max_bars = st.slider(

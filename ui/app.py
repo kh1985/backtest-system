@@ -43,8 +43,13 @@ def main():
     inject_custom_css()
 
     # セッション初期化
+    if "datasets" not in st.session_state:
+        st.session_state.datasets = {}  # {symbol: {tf: OHLCVData}}
+    # 後方互換
     if "ohlcv_data" not in st.session_state:
         st.session_state.ohlcv_data = None
+    if "ohlcv_dict" not in st.session_state:
+        st.session_state.ohlcv_dict = {}
     if "strategy" not in st.session_state:
         st.session_state.strategy = None
     if "backtest_result" not in st.session_state:
@@ -53,7 +58,7 @@ def main():
         st.session_state.backtest_metrics = None
 
     # ステータス判定
-    has_data = st.session_state.ohlcv_data is not None
+    has_data = len(st.session_state.datasets) > 0
     has_strategy = st.session_state.strategy is not None
     has_result = st.session_state.backtest_result is not None
     has_optimization = (
@@ -90,10 +95,9 @@ def main():
         ]
 
         for step_name, done in steps:
-            dot_class = "done" if done else "todo"
-            label_class = "" if done else "dimmed"
             check = "✓" if done else "○"
             color = "#3fb950" if done else "#484f58"
+            label_class = "" if done else "dimmed"
             st.markdown(
                 f'<div class="step-indicator">'
                 f'<span style="color:{color};font-size:0.9rem;">{check}</span>'
@@ -104,34 +108,18 @@ def main():
 
         st.divider()
 
-        # 詳細ステータス
+        # データセット一覧
         if has_data:
-            ohlcv_dict = st.session_state.get("ohlcv_dict", {})
-            if ohlcv_dict:
-                # シンボル別にグループ化して表示
-                symbol_tfs = {}
-                for tf_str, ohlcv in ohlcv_dict.items():
-                    sym = getattr(ohlcv, "symbol", "?")
-                    if sym not in symbol_tfs:
-                        symbol_tfs[sym] = []
-                    symbol_tfs[sym].append((tf_str, ohlcv.bars))
-
-                for sym, tfs_info in symbol_tfs.items():
-                    tf_labels = ", ".join(
-                        f"{tf}({bars:,})" for tf, bars in tfs_info
-                    )
-                    st.markdown(
-                        f'<span class="status-badge status-ready">'
-                        f'{sym}: {tf_labels}</span>',
-                        unsafe_allow_html=True,
-                    )
-
-                # シンボル混在警告
-                if len(symbol_tfs) > 1:
-                    st.warning(
-                        "⚠️ 複数シンボルが混在しています。"
-                        "Optimizerは1シンボルのみ対応。"
-                    )
+            st.caption("📦 Datasets")
+            for sym, tf_dict in st.session_state.datasets.items():
+                tf_labels = ", ".join(
+                    f"{tf}({ohlcv.bars:,})" for tf, ohlcv in tf_dict.items()
+                )
+                st.markdown(
+                    f'<span class="status-badge status-ready">'
+                    f'{sym}: {tf_labels}</span>',
+                    unsafe_allow_html=True,
+                )
 
         if has_strategy:
             name = getattr(st.session_state.strategy, "name", "")

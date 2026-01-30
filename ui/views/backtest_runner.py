@@ -24,22 +24,40 @@ def render_backtest_runner_page():
     st.caption("戦略のバックテスト実行・結果表示")
 
     # データと戦略の確認
-    has_data = "ohlcv_data" in st.session_state and st.session_state.ohlcv_data is not None
+    datasets = st.session_state.get("datasets", {})
+    has_data = len(datasets) > 0
     has_strategy = "strategy_config" in st.session_state and st.session_state.strategy_config.get("name")
 
     if not has_data:
-        st.warning("Data not loaded. Go to 'Data' page first.")
+        st.warning("データが読み込まれていません。'Data' ページでデータをアップロードしてください。")
         return
 
     if not has_strategy:
-        st.warning("Strategy not configured. Go to 'Strategy' page first.")
+        st.warning("戦略が設定されていません。'Strategy' ページで戦略を設定してください。")
         return
 
-    ohlcv = st.session_state.ohlcv_data
     config = st.session_state.strategy_config
 
-    # バックテスト設定
-    st.subheader("Settings")
+    # --- データセット選択 ---
+    st.subheader("📦 Dataset")
+    symbols = list(datasets.keys())
+    col_sym, col_tf = st.columns(2)
+    with col_sym:
+        selected_symbol = st.selectbox(
+            "Symbol", options=symbols, index=0, key="bt_symbol"
+        )
+    with col_tf:
+        tf_dict = datasets[selected_symbol]
+        tf_options = list(tf_dict.keys())
+        selected_tf = st.selectbox(
+            "Timeframe", options=tf_options, index=0, key="bt_tf"
+        )
+
+    ohlcv = tf_dict[selected_tf]
+    st.caption(f"📊 {selected_symbol} {selected_tf} — {ohlcv.bars:,} bars")
+
+    # --- バックテスト設定 ---
+    st.subheader("⚙️ Settings")
     col1, col2, col3 = st.columns(3)
     with col1:
         strategy_name = st.text_input(

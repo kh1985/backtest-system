@@ -36,7 +36,7 @@ def render_optimizer_page():
     """Optimizerページを描画"""
     st.header("⚡ Strategy Optimizer")
 
-    if "ohlcv_dict" not in st.session_state or not st.session_state.ohlcv_dict:
+    if not st.session_state.get("datasets"):
         st.warning("まず Data Loader でデータを読み込んでください。")
         return
 
@@ -81,10 +81,36 @@ def render_optimizer_page():
 def _render_config_view():
     """設定ビュー"""
 
+    datasets = st.session_state.datasets
+
+    # --- 0. データセット選択 ---
+    section_header("📦", "Dataset", "最適化に使用するデータ")
+
+    symbols = list(datasets.keys())
+    selected_symbol = st.selectbox(
+        "Symbol",
+        options=symbols,
+        index=0,
+        key="opt_symbol",
+    )
+
+    # 選択したシンボルのTF一覧
+    active_tf_dict = datasets[selected_symbol]
+    loaded_tfs = list(active_tf_dict.keys())
+
+    # 選択シンボルの情報表示
+    tf_info = ", ".join(
+        f"{tf}({active_tf_dict[tf].bars:,})" for tf in loaded_tfs
+    )
+    st.caption(f"**{selected_symbol}**: {tf_info}")
+
+    # ohlcv_dict を選択シンボルで同期
+    st.session_state.ohlcv_dict = active_tf_dict
+
+    st.divider()
+
     # --- 1. トレンド検出 ---
     section_header("📐", "Trend Detection", "トレンド判定の設定")
-
-    loaded_tfs = list(st.session_state.ohlcv_dict.keys())
 
     col1, col2 = st.columns(2)
     with col1:
