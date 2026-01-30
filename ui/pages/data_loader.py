@@ -356,7 +356,7 @@ def _render_data_preview():
     max_bars = st.slider(
         "Display bars",
         min_value=50,
-        max_value=min(2000, ohlcv.bars),
+        max_value=ohlcv.bars,
         value=min(500, ohlcv.bars),
         key="preview_bars",
     )
