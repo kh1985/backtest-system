@@ -54,10 +54,7 @@ def main():
 
     # ステータス判定
     has_data = st.session_state.ohlcv_data is not None
-    has_strategy = (
-        "strategy_config" in st.session_state
-        and st.session_state.strategy_config.get("name")
-    )
+    has_strategy = st.session_state.strategy is not None
     has_result = st.session_state.backtest_result is not None
     has_optimization = (
         "optimization_result" in st.session_state
@@ -116,7 +113,7 @@ def main():
                 unsafe_allow_html=True,
             )
         if has_strategy:
-            name = st.session_state.strategy_config.get("name", "")
+            name = getattr(st.session_state.strategy, "name", "")
             st.markdown(
                 f'<span class="status-badge status-active">Strategy: {name}</span>',
                 unsafe_allow_html=True,
