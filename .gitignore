@@ -13,9 +13,7 @@ env/
 cache/
 *.parquet
 
-sample_data/*.csv
-sample_data/binance/*-1m-merged.csv
-sample_data/binance/*-1m-1y-merged.csv
+sample_data/
 
 .pytest_cache/
 .coverage
