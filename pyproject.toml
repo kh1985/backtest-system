@@ -1,0 +1,26 @@
+[project]
+name = "backtest-system"
+version = "0.1.0"
+description = "Crypto trading backtesting system with multi-timeframe analysis and web dashboard"
+requires-python = ">=3.10"
+
+dependencies = [
+    "pandas>=2.0",
+    "numpy>=1.24",
+    "ccxt>=4.2.0",
+    "pyyaml>=6.0",
+    "streamlit>=1.30",
+    "plotly>=5.18",
+    "python-dotenv>=1.0.0",
+    "pyarrow>=14.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["config*", "data*", "indicators*", "strategy*", "engine*", "metrics*", "ui*", "analysis*", "optimizer*"]
+exclude = ["tests*", "sample_data*", "cache*"]

@@ -1,0 +1,20 @@
+name: "MA Crossover"
+side: long
+
+indicators:
+  - type: sma
+    period: 20
+  - type: sma
+    period: 50
+  - type: atr
+    period: 14
+
+entry_conditions:
+  - type: crossover
+    fast: sma_20
+    slow: sma_50
+    direction: above
+
+exit:
+  take_profit_pct: 2.0
+  stop_loss_pct: 1.0

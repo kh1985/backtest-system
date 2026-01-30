@@ -1,0 +1,24 @@
+name: "RSI + BB Reversal"
+side: long
+
+indicators:
+  - type: rsi
+    period: 14
+  - type: bollinger
+    period: 20
+    std_dev: 2.0
+
+entry_conditions:
+  - type: threshold
+    column: rsi_14
+    operator: "<"
+    value: 30
+  - type: threshold
+    column: close
+    operator: "<="
+    value: 0  # UIで動的に設定（bb_lowerとの比較は別途対応）
+
+exit:
+  take_profit_pct: 1.0
+  stop_loss_pct: 0.5
+  timeout_bars: 120

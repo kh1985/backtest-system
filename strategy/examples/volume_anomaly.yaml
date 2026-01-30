@@ -1,0 +1,27 @@
+name: "Volume Anomaly Reversal"
+side: long
+
+indicators:
+  - type: rvol
+    period: 20
+  - type: rsi
+    period: 14
+  - type: ema
+    period: 20
+
+entry_conditions:
+  - type: threshold
+    column: rvol_20
+    operator: ">="
+    value: 4.0
+  - type: candle
+    pattern: bearish
+  - type: threshold
+    column: rsi_14
+    operator: "<"
+    value: 40
+
+exit:
+  take_profit_pct: 0.5
+  stop_loss_pct: 0.5
+  timeout_bars: 60
