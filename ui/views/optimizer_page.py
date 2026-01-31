@@ -297,7 +297,7 @@ def _render_config_view():
         max_workers = os.cpu_count() or 4
         n_workers = st.number_input(
             "Workers (並列数)",
-            value=max_workers,
+            value=1,
             min_value=1,
             max_value=max_workers,
             step=1,
