@@ -1,0 +1,10 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "command": "if echo \"$CLAUDE_FILE_PATH\" | grep -q '\\.py$'; then python -m py_compile \"$CLAUDE_FILE_PATH\" 2>&1; fi"
+      }
+    ]
+  }
+}
