@@ -336,17 +336,19 @@ def _render_config_view():
     # --- 3. スコア重み ---
     section_header("🎯", "スコア重み", "複合スコアの重み配分")
 
-    wcol1, wcol2, wcol3, wcol4 = st.columns(4)
+    wcol1, wcol2, wcol3, wcol4, wcol5 = st.columns(5)
     with wcol1:
-        w_pf = st.slider("損益比率", 0.0, 1.0, 0.3, 0.05, key="opt_w_pf", help="総利益÷総損失の重み")
+        w_pf = st.slider("損益比率", 0.0, 1.0, 0.2, 0.05, key="opt_w_pf", help="総利益÷総損失の重み")
     with wcol2:
-        w_wr = st.slider("勝率", 0.0, 1.0, 0.3, 0.05, key="opt_w_wr", help="勝ちトレード割合の重み")
+        w_wr = st.slider("勝率", 0.0, 1.0, 0.2, 0.05, key="opt_w_wr", help="勝ちトレード割合の重み")
     with wcol3:
         w_dd = st.slider("最大DD (逆)", 0.0, 1.0, 0.2, 0.05, key="opt_w_dd", help="ドローダウンが小さいほど高評価")
     with wcol4:
         w_sh = st.slider("シャープ比", 0.0, 1.0, 0.2, 0.05, key="opt_w_sh", help="リスクあたりリターンの重み")
+    with wcol5:
+        w_ret = st.slider("合計損益", 0.0, 1.0, 0.2, 0.05, key="opt_w_ret", help="合計リターンの重み")
 
-    weight_sum = w_pf + w_wr + w_dd + w_sh
+    weight_sum = w_pf + w_wr + w_dd + w_sh + w_ret
     if abs(weight_sum - 1.0) > 0.01:
         st.warning(f"⚠️ 重みの合計 = {weight_sum:.2f}（1.0にしてください）")
     else:
@@ -413,7 +415,7 @@ def _render_config_view():
             target_regimes=target_regimes,
             selected_templates=selected_templates,
             custom_ranges=custom_ranges,
-            scoring_weights=ScoringWeights(w_pf, w_wr, w_dd, w_sh),
+            scoring_weights=ScoringWeights(w_pf, w_wr, w_dd, w_sh, w_ret),
             initial_capital=initial_capital,
             commission=commission,
             slippage=slippage,
@@ -433,7 +435,7 @@ def _render_config_view():
         target_regimes=target_regimes,
         selected_templates=selected_templates,
         custom_ranges=custom_ranges,
-        scoring_weights=ScoringWeights(w_pf, w_wr, w_dd, w_sh),
+        scoring_weights=ScoringWeights(w_pf, w_wr, w_dd, w_sh, w_ret),
         initial_capital=initial_capital,
         commission=commission,
         slippage=slippage,
@@ -844,7 +846,7 @@ def _render_regime_best_summary(result_set):
     for i, regime in enumerate(regimes_in_results):
         with cols[i]:
             regime_set = result_set.filter_regime(regime)
-            best = regime_set.best
+            best = regime_set.best_by_pnl
             if not best:
                 st.caption(f"{REGIME_ICONS.get(regime, '')} {REGIME_OPTIONS.get(regime, regime)}: データなし")
                 continue
@@ -1415,6 +1417,15 @@ def _render_load_view():
                     selected_path = file_options[selected_names[0]]
                     try:
                         result_set = OptimizationResultSet.from_json(str(selected_path))
+                        # 現在のスコア重みで再スコアリング
+                        weights = ScoringWeights(
+                            profit_factor=st.session_state.get("opt_w_pf", 0.2),
+                            win_rate=st.session_state.get("opt_w_wr", 0.2),
+                            max_drawdown=st.session_state.get("opt_w_dd", 0.2),
+                            sharpe_ratio=st.session_state.get("opt_w_sh", 0.2),
+                            total_return=st.session_state.get("opt_w_ret", 0.2),
+                        )
+                        result_set.rescore(weights)
                         st.session_state.optimization_result = result_set
                         st.session_state.optimizer_view = "results"
                         st.rerun()
@@ -1429,10 +1440,18 @@ def _render_load_view():
                     use_container_width=True,
                 ):
                     loaded = []
+                    weights = ScoringWeights(
+                        profit_factor=st.session_state.get("opt_w_pf", 0.2),
+                        win_rate=st.session_state.get("opt_w_wr", 0.2),
+                        max_drawdown=st.session_state.get("opt_w_dd", 0.2),
+                        sharpe_ratio=st.session_state.get("opt_w_sh", 0.2),
+                        total_return=st.session_state.get("opt_w_ret", 0.2),
+                    )
                     for name in selected_names:
                         fp = file_options[name]
                         try:
                             rs = OptimizationResultSet.from_json(str(fp))
+                            rs.rescore(weights)
                             loaded.append(rs)
                         except Exception as e:
                             st.error(f"読み込みエラー ({name}): {e}")

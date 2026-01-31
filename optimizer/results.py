@@ -110,8 +110,30 @@ class OptimizationResultSet:
         return max(self.entries, key=lambda e: e.composite_score)
 
     @property
+    def best_by_pnl(self) -> Optional[OptimizationEntry]:
+        """合計損益が最高のエントリー"""
+        if not self.entries:
+            return None
+        return max(self.entries, key=lambda e: e.metrics.total_profit_pct)
+
+    @property
     def total_combinations(self) -> int:
         return len(self.entries)
+
+    def rescore(self, weights=None) -> None:
+        """全エントリーのスコアを再計算（読み込み済みデータに新しい重みを適用）"""
+        from optimizer.scoring import calculate_composite_score
+
+        for entry in self.entries:
+            m = entry.metrics
+            entry.composite_score = calculate_composite_score(
+                profit_factor=m.profit_factor,
+                win_rate=m.win_rate,
+                max_drawdown_pct=m.max_drawdown_pct,
+                sharpe_ratio=m.sharpe_ratio,
+                total_return_pct=m.total_profit_pct,
+                weights=weights,
+            )
 
     @classmethod
     def from_json(cls, json_path: str) -> "OptimizationResultSet":

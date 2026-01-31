@@ -426,6 +426,7 @@ class GridSearchOptimizer:
             win_rate=metrics.win_rate,
             max_drawdown_pct=metrics.max_drawdown_pct,
             sharpe_ratio=metrics.sharpe_ratio,
+            total_return_pct=metrics.total_profit_pct,
             weights=self.scoring_weights,
         )
 
