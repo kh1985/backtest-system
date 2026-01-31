@@ -19,7 +19,7 @@ EXAMPLES_DIR = Path(__file__).resolve().parent.parent.parent / "strategy" / "exa
 
 def render_strategy_builder_page():
     """戦略ビルダーページを描画"""
-    st.header("🧩 Strategy Builder")
+    st.header("🧩 戦略ビルダー")
     st.caption("インジケーター・条件・決済ルールの設定")
 
     # セッション初期化
@@ -37,7 +37,7 @@ def render_strategy_builder_page():
 
 def _render_strategy_sidebar():
     """サイドバー: 保存済み戦略の読み込み"""
-    st.subheader("Saved Strategies")
+    st.subheader("保存済み戦略")
 
     # YAMLファイル一覧
     if EXAMPLES_DIR.exists():
@@ -51,24 +51,24 @@ def _render_strategy_sidebar():
                         st.session_state.strategy_config = config
                         st.rerun()
                     except Exception as e:
-                        st.error(f"Error loading: {e}")
+                        st.error(f"読み込みエラー: {e}")
 
     st.divider()
 
     # YAML直接入力
-    with st.expander("Import YAML"):
+    with st.expander("YAML読み込み"):
         yaml_text = st.text_area(
-            "Paste YAML",
+            "YAMLを貼り付け",
             height=200,
             placeholder="name: My Strategy\nside: long\n...",
         )
-        if st.button("Load from YAML"):
+        if st.button("YAMLから読み込み"):
             try:
                 config = yaml.safe_load(yaml_text)
                 st.session_state.strategy_config = config
                 st.rerun()
             except Exception as e:
-                st.error(f"Invalid YAML: {e}")
+                st.error(f"不正なYAML: {e}")
 
 
 def _render_strategy_form():
@@ -79,7 +79,7 @@ def _render_strategy_form():
     col1, col2 = st.columns(2)
     with col1:
         config["name"] = st.text_input(
-            "Strategy Name",
+            "戦略名",
             value=config.get("name", ""),
             placeholder="My Strategy",
         )
@@ -87,7 +87,8 @@ def _render_strategy_form():
         side_options = ["long", "short"]
         current_side = config.get("side", "long")
         config["side"] = st.selectbox(
-            "Direction",
+            "売買方向",
+            help="long=買い, short=売り",
             options=side_options,
             index=side_options.index(current_side) if current_side in side_options else 0,
         )
@@ -95,19 +96,19 @@ def _render_strategy_form():
     st.divider()
 
     # インジケーター設定
-    st.subheader("Indicators")
+    st.subheader("インジケーター")
     _render_indicators_section(config)
 
     st.divider()
 
     # エントリー条件
-    st.subheader("Entry Conditions")
+    st.subheader("エントリー条件")
     _render_conditions_section(config)
 
     st.divider()
 
     # 決済ルール
-    st.subheader("Exit Rules")
+    st.subheader("決済ルール")
     _render_exit_section(config)
 
     st.divider()
@@ -115,24 +116,24 @@ def _render_strategy_form():
     # アクションボタン
     col1, col2, col3 = st.columns(3)
     with col1:
-        if st.button("Save to Session", type="primary"):
+        if st.button("保存", type="primary"):
             try:
                 strategy = ConfigStrategy(config)
                 st.session_state.strategy = strategy
                 st.session_state.strategy_config = config
-                st.success(f"Strategy '{config['name']}' saved!")
+                st.success(f"戦略 '{config['name']}' を保存しました")
             except Exception as e:
-                st.error(f"Error: {e}")
+                st.error(f"エラー: {e}")
 
     with col2:
-        if st.button("Export YAML"):
+        if st.button("YAMLエクスポート"):
             yaml_str = yaml.dump(
                 config, default_flow_style=False, allow_unicode=True
             )
             st.code(yaml_str, language="yaml")
 
     with col3:
-        if st.button("Reset"):
+        if st.button("リセット"):
             st.session_state.strategy_config = _default_config()
             st.rerun()
 
@@ -146,7 +147,7 @@ def _render_indicators_section(config: dict):
             cols = st.columns([2, 3, 1])
             with cols[0]:
                 ind_type = st.selectbox(
-                    "Type",
+                    "種類",
                     options=list(INDICATOR_INFO.keys()),
                     index=list(INDICATOR_INFO.keys()).index(ind.get("type", "sma"))
                     if ind.get("type") in INDICATOR_INFO else 0,
@@ -185,7 +186,7 @@ def _render_indicators_section(config: dict):
                     indicators.pop(i)
                     st.rerun()
 
-    if st.button("+ Add Indicator"):
+    if st.button("+ インジケーター追加"):
         indicators.append({"type": "sma", "period": 20})
         st.rerun()
 
@@ -197,8 +198,9 @@ def _render_conditions_section(config: dict):
     conditions = config.get("entry_conditions", [])
 
     logic = st.selectbox(
-        "Logic",
+        "論理結合",
         options=["and", "or"],
+        help="and=すべて満たす, or=いずれか満たす",
         index=0 if config.get("entry_logic", "and") == "and" else 1,
     )
     config["entry_logic"] = logic
@@ -208,7 +210,7 @@ def _render_conditions_section(config: dict):
             cols = st.columns([2, 3, 1])
             with cols[0]:
                 cond_type = st.selectbox(
-                    "Condition Type",
+                    "条件タイプ",
                     options=["threshold", "crossover", "candle"],
                     index=["threshold", "crossover", "candle"].index(
                         cond.get("type", "threshold")
@@ -222,14 +224,15 @@ def _render_conditions_section(config: dict):
                     c1, c2, c3 = st.columns(3)
                     with c1:
                         cond["column"] = st.text_input(
-                            "Column",
+                            "カラム",
                             value=cond.get("column", ""),
                             placeholder="rsi_14",
                             key=f"cond_col_{i}",
+                            help="インジケーターの出力カラム名",
                         )
                     with c2:
                         cond["operator"] = st.selectbox(
-                            "Op",
+                            "演算子",
                             options=[">", "<", ">=", "<=", "=="],
                             index=[">", "<", ">=", "<=", "=="].index(
                                 cond.get("operator", ">")
@@ -238,7 +241,7 @@ def _render_conditions_section(config: dict):
                         )
                     with c3:
                         cond["value"] = st.number_input(
-                            "Value",
+                            "値",
                             value=float(cond.get("value", 0)),
                             step=0.1,
                             key=f"cond_val_{i}",
@@ -248,29 +251,33 @@ def _render_conditions_section(config: dict):
                     c1, c2, c3 = st.columns(3)
                     with c1:
                         cond["fast"] = st.text_input(
-                            "Fast",
+                            "短期",
                             value=cond.get("fast", ""),
                             placeholder="sma_20",
                             key=f"cond_fast_{i}",
+                            help="速い（短期）インジケーター",
                         )
                     with c2:
                         cond["slow"] = st.text_input(
-                            "Slow",
+                            "長期",
                             value=cond.get("slow", ""),
                             placeholder="sma_50",
                             key=f"cond_slow_{i}",
+                            help="遅い（長期）インジケーター",
                         )
                     with c3:
                         cond["direction"] = st.selectbox(
-                            "Direction",
+                            "方向",
                             options=["above", "below"],
+                            help="above=上抜け, below=下抜け",
                             key=f"cond_dir_{i}",
                         )
 
                 elif cond_type == "candle":
                     cond["pattern"] = st.selectbox(
-                        "Pattern",
+                        "パターン",
                         options=["bearish", "bullish"],
+                        help="bullish=陽線, bearish=陰線",
                         key=f"cond_pattern_{i}",
                     )
 
@@ -279,7 +286,7 @@ def _render_conditions_section(config: dict):
                     conditions.pop(i)
                     st.rerun()
 
-    if st.button("+ Add Condition"):
+    if st.button("+ 条件追加"):
         conditions.append({"type": "threshold", "column": "", "operator": ">", "value": 0})
         st.rerun()
 
@@ -293,33 +300,37 @@ def _render_exit_section(config: dict):
     col1, col2, col3 = st.columns(3)
     with col1:
         exit_config["take_profit_pct"] = st.number_input(
-            "Take Profit (%)",
+            "利確 (%)",
             value=float(exit_config.get("take_profit_pct", 1.0)),
             min_value=0.01,
             step=0.1,
+            help="この利益率に達したら利確決済",
         )
     with col2:
         exit_config["stop_loss_pct"] = st.number_input(
-            "Stop Loss (%)",
+            "損切り (%)",
             value=float(exit_config.get("stop_loss_pct", 0.5)),
             min_value=0.01,
             step=0.1,
+            help="この損失率に達したら損切り決済",
         )
     with col3:
         timeout = st.number_input(
-            "Timeout (bars, 0=disabled)",
+            "タイムアウト (本数, 0=無効)",
             value=int(exit_config.get("timeout_bars") or 0),
             min_value=0,
             step=10,
+            help="指定本数経過後に強制決済。0で無効",
         )
         exit_config["timeout_bars"] = timeout if timeout > 0 else None
 
     # トレーリングストップ
     trailing = st.number_input(
-        "Trailing Stop (%, 0=disabled)",
+        "トレーリングストップ (%, 0=無効)",
         value=float(exit_config.get("trailing_stop_pct") or 0),
         min_value=0.0,
         step=0.1,
+        help="最高値から指定%下がったら決済。利益を伸ばしつつ損失を限定",
     )
     exit_config["trailing_stop_pct"] = trailing if trailing > 0 else None
 

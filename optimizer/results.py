@@ -103,3 +103,56 @@ class OptimizationResultSet:
     @property
     def total_combinations(self) -> int:
         return len(self.entries)
+
+    @classmethod
+    def from_json(cls, json_path: str) -> "OptimizationResultSet":
+        """保存済みJSONから結果セットを復元"""
+        import json
+
+        with open(json_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        entries = []
+        for row in data.get("results", []):
+            m = row["metrics"]
+            total_trades = m["trades"]
+            win_rate = m["win_rate"]
+            winning = round(total_trades * win_rate / 100)
+            losing = total_trades - winning
+
+            metrics = BacktestMetrics(
+                total_trades=total_trades,
+                winning_trades=winning,
+                losing_trades=losing,
+                win_rate=win_rate,
+                total_profit_pct=m["total_pnl"],
+                avg_profit_pct=0.0,
+                avg_loss_pct=0.0,
+                profit_factor=m["profit_factor"],
+                max_drawdown_pct=m["max_dd"],
+                sharpe_ratio=m["sharpe"],
+                avg_duration_bars=0.0,
+                best_trade_pct=0.0,
+                worst_trade_pct=0.0,
+                equity_curve=[],
+                cumulative_returns=[],
+                drawdown_series=[],
+            )
+
+            entry = OptimizationEntry(
+                template_name=row["template"],
+                params=row["params"],
+                trend_regime=row["regime"],
+                config=row.get("config", {}),
+                metrics=metrics,
+                composite_score=row["score"],
+                backtest_result=None,
+            )
+            entries.append(entry)
+
+        return cls(
+            entries=entries,
+            symbol=data.get("symbol", ""),
+            execution_tf=data.get("execution_tf", ""),
+            htf=data.get("htf", ""),
+        )

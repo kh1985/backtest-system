@@ -20,7 +20,7 @@ from ui.components.trade_table import render_trade_table
 
 def render_backtest_runner_page():
     """バックテスト実行ページを描画"""
-    st.header("▶️ Backtest Runner")
+    st.header("▶️ バックテスト")
     st.caption("戦略のバックテスト実行・結果表示")
 
     # データと戦略の確認
@@ -29,60 +29,70 @@ def render_backtest_runner_page():
     has_strategy = "strategy_config" in st.session_state and st.session_state.strategy_config.get("name")
 
     if not has_data:
-        st.warning("データが読み込まれていません。'Data' ページでデータをアップロードしてください。")
+        st.info(
+            "📂 **データが読み込まれていません**\n\n"
+            "バックテストにはOHLCVデータが必要です。\n\n"
+            "サイドバーの **📂 データ** ページでCSVファイルを読み込んでください。"
+        )
         return
 
     if not has_strategy:
-        st.warning("戦略が設定されていません。'Strategy' ページで戦略を設定してください。")
+        st.info(
+            "🧩 **戦略が設定されていません**\n\n"
+            "バックテストには戦略の設定が必要です。\n\n"
+            "サイドバーの **🧩 戦略** ページでインジケーター・条件・決済ルールを設定してください。"
+        )
         return
 
     config = st.session_state.strategy_config
 
     # --- データセット選択 ---
-    st.subheader("📦 Dataset")
+    st.subheader("📦 データセット")
     symbols = list(datasets.keys())
     col_sym, col_tf = st.columns(2)
     with col_sym:
         selected_symbol = st.selectbox(
-            "Symbol", options=symbols, index=0, key="bt_symbol"
+            "シンボル", options=symbols, index=0, key="bt_symbol"
         )
     with col_tf:
         tf_dict = datasets[selected_symbol]
         tf_options = list(tf_dict.keys())
         selected_tf = st.selectbox(
-            "Timeframe", options=tf_options, index=0, key="bt_tf"
+            "タイムフレーム", options=tf_options, index=0, key="bt_tf"
         )
 
     ohlcv = tf_dict[selected_tf]
     st.caption(f"📊 {selected_symbol} {selected_tf} — {ohlcv.bars:,} bars")
 
     # --- バックテスト設定 ---
-    st.subheader("⚙️ Settings")
+    st.subheader("⚙️ 設定")
     col1, col2, col3 = st.columns(3)
     with col1:
         strategy_name = st.text_input(
-            "Strategy",
+            "戦略",
             value=config.get("name", ""),
             disabled=True,
         )
     with col2:
         initial_capital = st.number_input(
-            "Initial Capital (USDT)",
+            "初期資金 (USDT)",
             value=10000.0,
             min_value=100.0,
             step=1000.0,
+            help="バックテスト開始時の資金",
         )
     with col3:
         commission = st.number_input(
-            "Commission (%)",
+            "手数料 (%)",
             value=0.04,
             min_value=0.0,
             step=0.01,
             format="%.4f",
+            help="1トレードあたりの取引手数料率",
         )
 
     # 実行ボタン
-    if st.button("Run Backtest", type="primary", use_container_width=True):
+    if st.button("バックテスト実行", type="primary", use_container_width=True):
         _run_backtest(ohlcv, config, initial_capital, commission)
 
     # 結果表示
@@ -92,7 +102,7 @@ def render_backtest_runner_page():
 
 def _run_backtest(ohlcv, config, initial_capital, commission):
     """バックテスト実行"""
-    with st.spinner("Running backtest..."):
+    with st.spinner("バックテスト実行中..."):
         try:
             strategy = ConfigStrategy(config)
             engine = BacktestEngine(
@@ -109,12 +119,12 @@ def _run_backtest(ohlcv, config, initial_capital, commission):
             st.session_state.backtest_result = result
             st.session_state.backtest_metrics = metrics
             st.success(
-                f"Backtest complete! {len(result.trades)} trades executed."
+                f"バックテスト完了！ {len(result.trades)} 件のトレードを実行"
             )
             st.rerun()
 
         except Exception as e:
-            st.error(f"Backtest error: {e}")
+            st.error(f"バックテストエラー: {e}")
             import traceback
             st.code(traceback.format_exc())
 
@@ -125,7 +135,7 @@ def _render_results():
     metrics = st.session_state.backtest_metrics
 
     st.divider()
-    st.subheader(f"Results: {result.strategy_name}")
+    st.subheader(f"結果: {result.strategy_name}")
 
     # メトリクスカード
     render_metrics_cards(metrics)
@@ -145,14 +155,15 @@ def _render_results():
     st.divider()
 
     # ローソク足チャート（トレードマーカー付き）
-    st.subheader("Chart with Trades")
+    st.subheader("トレードチャート")
 
     max_bars = st.slider(
-        "Display bars",
+        "表示本数",
         min_value=50,
         max_value=min(2000, len(result.df)),
         value=min(500, len(result.df)),
         key="backtest_chart_bars",
+        help="チャートに表示するローソク足の本数",
     )
 
     display_df = result.df.tail(max_bars)
@@ -171,7 +182,7 @@ def _render_results():
     st.divider()
 
     # トレード一覧
-    st.subheader("Trade List")
+    st.subheader("トレード一覧")
     render_trade_table(result.trades)
 
 

@@ -29,5 +29,5 @@ DEFAULT_SLIPPAGE_PCT = 0.0
 SUPPORTED_TIMEFRAMES = ["1m", "5m", "15m", "1h", "4h", "1d"]
 
 # Streamlit設定
-STREAMLIT_PAGE_TITLE = "Backtest System"
+STREAMLIT_PAGE_TITLE = "Prism"
 STREAMLIT_LAYOUT = "wide"

@@ -34,8 +34,8 @@ def _add_to_datasets(ohlcv):
 
 def render_data_loader_page():
     """データローダーページを描画"""
-    st.header("📂 Data Loader")
-    st.caption("OHLCVデータの読み込み・プレビュー")
+    st.header("📂 データ読み込み")
+    st.caption("OHLCVデータのインポート・プレビュー")
 
     # ohlcv_dict の初期化 (後方互換)
     if "ohlcv_dict" not in st.session_state:
@@ -61,19 +61,19 @@ def render_data_loader_page():
 
 def _render_datasets_summary():
     """全データセットの一覧"""
-    st.subheader("📦 Loaded Datasets")
+    st.subheader("📦 読み込み済みデータ")
 
     datasets = st.session_state.datasets
     rows = []
     for sym, tf_dict in datasets.items():
         for tf_str, ohlcv in tf_dict.items():
             rows.append({
-                "Symbol": sym,
-                "TF": tf_str,
-                "Bars": f"{ohlcv.bars:,}",
-                "Start": str(ohlcv.start_time)[:19] if ohlcv.start_time else "",
-                "End": str(ohlcv.end_time)[:19] if ohlcv.end_time else "",
-                "Source": getattr(ohlcv, "source", ""),
+                "シンボル": sym,
+                "時間足": tf_str,
+                "データ数": f"{ohlcv.bars:,}",
+                "開始": str(ohlcv.start_time)[:19] if ohlcv.start_time else "",
+                "終了": str(ohlcv.end_time)[:19] if ohlcv.end_time else "",
+                "ソース": getattr(ohlcv, "source", ""),
             })
 
     if rows:
@@ -84,9 +84,9 @@ def _render_datasets_summary():
         col_del1, col_del2, col_del3 = st.columns([2, 2, 1])
         with col_del1:
             del_sym = st.selectbox(
-                "Delete dataset",
+                "データセット削除",
                 options=[""] + list(datasets.keys()),
-                format_func=lambda x: "Select..." if x == "" else x,
+                format_func=lambda x: "選択..." if x == "" else x,
                 key="del_dataset_sym",
             )
         with col_del2:
@@ -95,7 +95,7 @@ def _render_datasets_summary():
                     f"{del_sym}: {', '.join(datasets[del_sym].keys())}"
                 )
         with col_del3:
-            if del_sym and st.button("🗑 Delete", use_container_width=True):
+            if del_sym and st.button("🗑 削除", use_container_width=True):
                 del st.session_state.datasets[del_sym]
                 # ohlcv_dict からも該当シンボルのTFを削除
                 for tf_str in list(st.session_state.ohlcv_dict.keys()):
@@ -107,9 +107,9 @@ def _render_datasets_summary():
 
 def _render_csv_tab():
     """CSVインポートタブ（複数TF対応）"""
-    st.subheader("TradingView CSV Import")
+    st.subheader("TradingView CSV インポート")
 
-    symbol = st.text_input("Symbol", value="", placeholder="WLDUSDT.P")
+    symbol = st.text_input("シンボル", value="", placeholder="WLDUSDT.P")
 
     st.markdown("**各タイムフレームのCSVを設定してください（不要なTFは空のままでOK）**")
 
@@ -121,20 +121,20 @@ def _render_csv_tab():
             col1, col2 = st.columns([3, 1])
             with col1:
                 csv_path = st.text_input(
-                    "File Path",
+                    "ファイルパス",
                     placeholder=rf"C:\path\to\data_{tf_str}.csv",
                     key=f"csv_path_{tf_str}",
                 )
             with col2:
                 uploaded = st.file_uploader(
-                    "Upload",
+                    "アップロード",
                     type=["csv"],
                     key=f"csv_upload_{tf_str}",
                 )
 
             entries.append((tf_str, csv_path, uploaded))
 
-    if st.button("Load All CSV", type="primary", use_container_width=True):
+    if st.button("CSV一括読み込み", type="primary", use_container_width=True):
         loaded_count = 0
         for tf_str, csv_path, uploaded in entries:
             try:
@@ -148,7 +148,7 @@ def _render_csv_tab():
                 st.error(f"[{tf_str}] Error: {e}")
 
         if loaded_count > 0:
-            st.success(f"{loaded_count} timeframe(s) loaded.")
+            st.success(f"{loaded_count} タイムフレーム読み込み完了")
             st.rerun()
         else:
             st.warning("読み込むCSVがありません。パスを入力するかファイルをアップロードしてください。")
@@ -199,7 +199,7 @@ def _detect_tf_from_data(df: pd.DataFrame):
 
 def _render_binance_tab():
     """Binance Data CSV/ZIPインポート（一括読み込み対応）"""
-    st.subheader("Binance Data CSV/ZIP Import")
+    st.subheader("Binance CSV/ZIP インポート")
     st.caption("ディレクトリ指定 or ドラッグ＆ドロップで一括読み込み（TFはデータから自動判定）")
 
     loader = BinanceCSVLoader()
@@ -208,13 +208,14 @@ def _render_binance_tab():
     col_dir, col_scan = st.columns([5, 1])
     with col_dir:
         dir_path = st.text_input(
-            "Directory Path",
+            "ディレクトリパス",
             value="inputdata",
             key="binance_dir",
+            help="CSV/ZIPファイルが入っているフォルダのパス",
         )
     with col_scan:
         st.markdown("<br>", unsafe_allow_html=True)
-        scan_clicked = st.button("Scan")
+        scan_clicked = st.button("スキャン")
 
     if scan_clicked and dir_path:
         p = Path(dir_path)
@@ -263,9 +264,9 @@ def _render_binance_tab():
                     fname = Path(fp).name
                     tf = loader.detect_timeframe(fname)
                     rows.append({
-                        "Symbol": sym,
-                        "File": fname,
-                        "TF (filename)": tf.value if tf else "?",
+                        "シンボル": sym,
+                        "ファイル": fname,
+                        "時間足 (参考)": tf.value if tf else "?",
                     })
             st.dataframe(
                 pd.DataFrame(rows), use_container_width=True, hide_index=True
@@ -275,11 +276,11 @@ def _render_binance_tab():
         col_load, col_clear = st.columns([3, 1])
         with col_load:
             if selected and st.button(
-                "Load Selected", type="primary", use_container_width=True
+                "選択を読み込み", type="primary", use_container_width=True
             ):
                 _bulk_load_paths(loader, scan, selected)
         with col_clear:
-            if st.button("Clear", use_container_width=True):
+            if st.button("クリア", use_container_width=True):
                 if "binance_scan" in st.session_state:
                     del st.session_state.binance_scan
                 st.rerun()
@@ -287,7 +288,7 @@ def _render_binance_tab():
     elif uploaded:
         st.markdown(f"**{len(uploaded)} ファイル選択済み**")
         if st.button(
-            "Load Uploaded", type="primary", use_container_width=True
+            "アップロードを読み込み", type="primary", use_container_width=True
         ):
             _bulk_load_uploads(loader, uploaded)
 
@@ -366,14 +367,14 @@ def _bulk_load_uploads(loader, uploaded_files):
 def _render_data_preview():
     """選択したデータセットのプレビュー"""
     st.divider()
-    st.subheader("📊 Data Preview")
+    st.subheader("📊 データプレビュー")
 
     datasets = st.session_state.datasets
     symbols = list(datasets.keys())
 
     # シンボル選択
     selected_sym = st.selectbox(
-        "Symbol",
+        "シンボル",
         options=symbols,
         index=0,
         key="preview_symbol",
@@ -384,7 +385,7 @@ def _render_data_preview():
 
     # TF選択
     selected_tf = st.selectbox(
-        "Timeframe",
+        "タイムフレーム",
         options=tfs,
         index=0,
         key="preview_tf",
@@ -395,21 +396,22 @@ def _render_data_preview():
     # 基本情報
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.metric("Symbol", ohlcv.symbol)
+        st.metric("シンボル", ohlcv.symbol)
     with col2:
-        st.metric("Bars", f"{ohlcv.bars:,}")
+        st.metric("データ数", f"{ohlcv.bars:,}")
     with col3:
-        st.caption(f"Start: {str(ohlcv.start_time)[:19]}" if ohlcv.start_time else "")
+        st.caption(f"開始: {str(ohlcv.start_time)[:19]}" if ohlcv.start_time else "")
     with col4:
-        st.caption(f"End: {str(ohlcv.end_time)[:19]}" if ohlcv.end_time else "")
+        st.caption(f"終了: {str(ohlcv.end_time)[:19]}" if ohlcv.end_time else "")
 
     # チャート
     max_bars = st.slider(
-        "Display bars",
+        "表示本数",
         min_value=50,
         max_value=ohlcv.bars,
         value=min(500, ohlcv.bars),
         key="preview_bars",
+        help="チャートに表示するローソク足の本数",
     )
     display_df = ohlcv.df.tail(max_bars).copy()
 
@@ -420,7 +422,7 @@ def _render_data_preview():
     st.plotly_chart(fig, use_container_width=True)
 
     # データテーブル
-    with st.expander("Raw Data"):
+    with st.expander("生データ"):
         st.dataframe(
             ohlcv.df.tail(100),
             use_container_width=True,

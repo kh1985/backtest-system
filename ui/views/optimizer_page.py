@@ -16,7 +16,7 @@ from analysis.trend import TrendDetector, TrendRegime
 from optimizer.templates import BUILTIN_TEMPLATES, ParameterRange
 from optimizer.scoring import ScoringWeights
 from optimizer.grid import GridSearchOptimizer
-from ui.components.styles import section_header, best_strategy_card, template_tag
+from ui.components.styles import section_header, template_tag
 
 
 REGIME_OPTIONS = {
@@ -34,33 +34,30 @@ REGIME_ICONS = {
 
 def render_optimizer_page():
     """Optimizerページを描画"""
-    st.header("⚡ Strategy Optimizer")
+    st.header("⚡ 戦略オプティマイザー")
 
-    if not st.session_state.get("datasets"):
-        st.warning("まず Data Loader でデータを読み込んでください。")
-        return
-
+    # セッション初期化（ガードより先に実行）
     if "optimization_result" not in st.session_state:
         st.session_state.optimization_result = None
-
-    # 最適化完了後は自動で結果ビューを表示
     if "optimizer_view" not in st.session_state:
         st.session_state.optimizer_view = "config"
 
     has_results = st.session_state.optimization_result is not None
+    has_data = bool(st.session_state.get("datasets"))
 
-    # ビュー切り替え
-    col_nav1, col_nav2, col_spacer = st.columns([1, 1, 4])
+    # ビュー切り替え（データ有無によらず表示）
+    col_nav1, col_nav2, col_nav3, col_spacer = st.columns([1, 1, 1, 3])
     with col_nav1:
         if st.button(
-            "⚙️ Configuration",
+            "⚙️ 設定",
             type="primary" if st.session_state.optimizer_view == "config" else "secondary",
+            disabled=not has_data,
             use_container_width=True,
         ):
             st.session_state.optimizer_view = "config"
             st.rerun()
     with col_nav2:
-        btn_label = f"📊 Results ({st.session_state.optimization_result.total_combinations})" if has_results else "📊 Results"
+        btn_label = f"📊 結果 ({st.session_state.optimization_result.total_combinations})" if has_results else "📊 結果"
         if st.button(
             btn_label,
             type="primary" if st.session_state.optimizer_view == "results" else "secondary",
@@ -69,11 +66,28 @@ def render_optimizer_page():
         ):
             st.session_state.optimizer_view = "results"
             st.rerun()
+    with col_nav3:
+        if st.button(
+            "📁 読込",
+            type="primary" if st.session_state.optimizer_view == "load" else "secondary",
+            use_container_width=True,
+        ):
+            st.session_state.optimizer_view = "load"
+            st.rerun()
 
     st.divider()
 
     if st.session_state.optimizer_view == "config":
+        if not has_data:
+            st.info(
+                "📂 **データが読み込まれていません**\n\n"
+                "最適化にはOHLCVデータが必要です（2つ以上のタイムフレーム推奨）。\n\n"
+                "サイドバーの **📂 データ** ページでCSVファイルを読み込んでください。"
+            )
+            return
         _render_config_view()
+    elif st.session_state.optimizer_view == "load":
+        _render_load_view()
     else:
         _render_results_view()
 
@@ -84,11 +98,11 @@ def _render_config_view():
     datasets = st.session_state.datasets
 
     # --- 0. データセット選択 ---
-    section_header("📦", "Dataset", "最適化に使用するデータ")
+    section_header("📦", "データセット", "最適化に使用するデータ")
 
     symbols = list(datasets.keys())
     selected_symbol = st.selectbox(
-        "Symbol",
+        "シンボル",
         options=symbols,
         index=0,
         key="opt_symbol",
@@ -110,12 +124,12 @@ def _render_config_view():
     st.divider()
 
     # --- 1. トレンド検出 ---
-    section_header("📐", "Trend Detection", "トレンド判定の設定")
+    section_header("📐", "トレンド検出", "トレンド判定の設定")
 
     col1, col2 = st.columns(2)
     with col1:
         exec_tf = st.selectbox(
-            "Execution Timeframe (実行TF)",
+            "実行タイムフレーム",
             options=loaded_tfs,
             index=0,
             key="opt_exec_tf",
@@ -125,7 +139,7 @@ def _render_config_view():
         htf_options = [tf for tf in loaded_tfs if tf != exec_tf]
         if htf_options:
             htf = st.selectbox(
-                "Higher Timeframe (上位TF)",
+                "上位タイムフレーム",
                 options=htf_options,
                 index=0,
                 key="opt_htf",
@@ -138,39 +152,40 @@ def _render_config_view():
     col3, col4 = st.columns(2)
     with col3:
         trend_method = st.selectbox(
-            "Detection Method",
+            "検出方法",
             options=["ma_cross", "adx", "combined"],
             format_func=lambda x: {
-                "ma_cross": "MA Cross",
-                "adx": "ADX",
-                "combined": "MA Cross + ADX (Combined)",
+                "ma_cross": "MA Cross（移動平均クロス）",
+                "adx": "ADX（トレンド強度）",
+                "combined": "MA Cross + ADX（複合）",
             }[x],
             key="opt_trend_method",
+            help="トレンド/レンジを判定するアルゴリズム",
         )
     with col4:
         target_regimes = st.multiselect(
-            "Target Regimes",
+            "対象レジーム",
             options=list(REGIME_OPTIONS.keys()),
             default=list(REGIME_OPTIONS.keys()),
             format_func=lambda x: f"{REGIME_ICONS.get(x, '')} {REGIME_OPTIONS[x]}",
             key="opt_regimes",
         )
 
-    with st.expander("Trend Detection Parameters", expanded=False):
+    with st.expander("トレンド検出パラメータ", expanded=False):
         tcol1, tcol2, tcol3 = st.columns(3)
         with tcol1:
-            ma_fast = st.number_input("MA Fast Period", value=20, min_value=5, key="opt_ma_fast")
-            ma_slow = st.number_input("MA Slow Period", value=50, min_value=10, key="opt_ma_slow")
+            ma_fast = st.number_input("MA 短期", value=20, min_value=5, key="opt_ma_fast", help="短期移動平均の期間")
+            ma_slow = st.number_input("MA 長期", value=50, min_value=10, key="opt_ma_slow", help="長期移動平均の期間")
         with tcol2:
-            adx_period = st.number_input("ADX Period", value=14, min_value=5, key="opt_adx_period")
-            adx_trend_th = st.number_input("ADX Trend Threshold", value=25.0, key="opt_adx_trend_th")
+            adx_period = st.number_input("ADX 期間", value=14, min_value=5, key="opt_adx_period", help="ADX算出の期間")
+            adx_trend_th = st.number_input("ADX トレンド閾値", value=25.0, key="opt_adx_trend_th", help="この値以上でトレンドと判定")
         with tcol3:
-            adx_range_th = st.number_input("ADX Range Threshold", value=20.0, key="opt_adx_range_th")
+            adx_range_th = st.number_input("ADX レンジ閾値", value=20.0, key="opt_adx_range_th", help="この値以下でレンジと判定")
 
     st.divider()
 
     # --- 2. テンプレート選択（Long/Short分類） ---
-    section_header("🧩", "Strategy Templates", "テスト対象のテンプレート")
+    section_header("🧩", "戦略テンプレート", "テスト対象のテンプレート")
 
     # Long/Shortに分類
     long_templates = {k: v for k, v in BUILTIN_TEMPLATES.items()
@@ -257,41 +272,41 @@ def _render_config_view():
     st.divider()
 
     # --- 3. スコア重み ---
-    section_header("🎯", "Scoring Weights", "複合スコアの重み配分")
+    section_header("🎯", "スコア重み", "複合スコアの重み配分")
 
     wcol1, wcol2, wcol3, wcol4 = st.columns(4)
     with wcol1:
-        w_pf = st.slider("Profit Factor", 0.0, 1.0, 0.3, 0.05, key="opt_w_pf")
+        w_pf = st.slider("損益比率", 0.0, 1.0, 0.3, 0.05, key="opt_w_pf", help="総利益÷総損失の重み")
     with wcol2:
-        w_wr = st.slider("Win Rate", 0.0, 1.0, 0.3, 0.05, key="opt_w_wr")
+        w_wr = st.slider("勝率", 0.0, 1.0, 0.3, 0.05, key="opt_w_wr", help="勝ちトレード割合の重み")
     with wcol3:
-        w_dd = st.slider("Max DD (inv)", 0.0, 1.0, 0.2, 0.05, key="opt_w_dd")
+        w_dd = st.slider("最大DD (逆)", 0.0, 1.0, 0.2, 0.05, key="opt_w_dd", help="ドローダウンが小さいほど高評価")
     with wcol4:
-        w_sh = st.slider("Sharpe", 0.0, 1.0, 0.2, 0.05, key="opt_w_sh")
+        w_sh = st.slider("シャープ比", 0.0, 1.0, 0.2, 0.05, key="opt_w_sh", help="リスクあたりリターンの重み")
 
     weight_sum = w_pf + w_wr + w_dd + w_sh
     if abs(weight_sum - 1.0) > 0.01:
-        st.warning(f"⚠️ Weights sum = {weight_sum:.2f} (should be 1.0)")
+        st.warning(f"⚠️ 重みの合計 = {weight_sum:.2f}（1.0にしてください）")
     else:
-        st.caption(f"✓ Weights sum = {weight_sum:.2f}")
+        st.caption(f"✓ 重みの合計 = {weight_sum:.2f}")
 
     st.divider()
 
     # --- 4. バックテスト設定 ---
-    section_header("⚙️", "Backtest Settings", "実行パラメータ")
+    section_header("⚙️", "バックテスト設定", "実行パラメータ")
 
     bcol1, bcol2, bcol3, bcol4 = st.columns(4)
     with bcol1:
         initial_capital = st.number_input(
-            "Initial Capital", value=10000.0, min_value=100.0, key="opt_capital"
+            "初期資金", value=10000.0, min_value=100.0, key="opt_capital", help="バックテスト開始時の資金 (USDT)"
         )
     with bcol2:
         commission = st.number_input(
-            "Commission (%)", value=0.04, min_value=0.0, step=0.01, key="opt_commission"
+            "手数料 (%)", value=0.04, min_value=0.0, step=0.01, key="opt_commission", help="1トレードあたりの取引手数料率"
         )
     with bcol3:
         slippage = st.number_input(
-            "Slippage (%)", value=0.0, min_value=0.0, step=0.01, key="opt_slippage"
+            "スリッページ (%)", value=0.0, min_value=0.0, step=0.01, key="opt_slippage", help="注文時の価格ずれを想定"
         )
     with bcol4:
         max_workers = os.cpu_count() or 4
@@ -313,15 +328,15 @@ def _render_config_view():
     # サマリーカード
     scol1, scol2, scol3, scol4 = st.columns(4)
     with scol1:
-        st.metric("Templates", f"{len(selected_templates)}")
+        st.metric("テンプレート", f"{len(selected_templates)}")
     with scol2:
-        st.metric("Regimes", f"{len(target_regimes)}")
+        st.metric("レジーム", f"{len(target_regimes)}")
     with scol3:
-        st.metric("Combinations", f"{total_combinations:,}")
+        st.metric("組合せ数", f"{total_combinations:,}")
     with scol4:
-        st.metric("Total Runs", f"{total_runs:,}")
+        st.metric("総実行数", f"{total_runs:,}")
 
-    if st.button("🚀 Run Optimization", type="primary", use_container_width=True):
+    if st.button("🚀 最適化実行", type="primary", use_container_width=True):
         if not selected_templates:
             st.error("テンプレートを1つ以上選択してください")
             return
@@ -503,6 +518,100 @@ def _run_optimization(
     st.rerun()
 
 
+def _render_regime_best_summary(result_set):
+    """レジーム別ベスト戦略サマリーを描画。採用可能な戦略のdictを返す。"""
+    section_header("🏆", "Best per Regime", "レジーム別トップ戦略")
+
+    regimes_in_results = sorted(set(e.trend_regime for e in result_set.entries))
+
+    if not regimes_in_results:
+        st.info("結果がありません")
+        return {}
+
+    viable = {}
+    cols = st.columns(len(regimes_in_results))
+
+    for i, regime in enumerate(regimes_in_results):
+        with cols[i]:
+            regime_set = result_set.filter_regime(regime)
+            best = regime_set.best
+            if not best:
+                st.caption(f"{REGIME_ICONS.get(regime, '')} {REGIME_OPTIONS.get(regime, regime)}: データなし")
+                continue
+
+            pf = best.metrics.profit_factor
+            pnl = best.metrics.total_profit_pct
+            wr = best.metrics.win_rate
+            trades = best.metrics.total_trades
+            sharpe = best.metrics.sharpe_ratio
+            dd = best.metrics.max_drawdown_pct
+            score = best.composite_score
+
+            # 採用基準: PF > 1.0 かつ P/L > 0 かつ trades >= 5
+            is_viable = pf > 1.0 and pnl > 0 and trades >= 5
+
+            if is_viable:
+                viable[regime] = best
+
+            icon = REGIME_ICONS.get(regime, "")
+            label = REGIME_OPTIONS.get(regime, regime)
+            card_cls = "viable" if is_viable else "not-viable"
+            pnl_cls = "positive" if pnl > 0 else "negative"
+            pf_cls = "positive" if pf > 1.0 else "negative"
+            sharpe_cls = "positive" if sharpe > 0 else "negative"
+            verdict_cls = "pass" if is_viable else "fail"
+            verdict_text = "✅ 採用可" if is_viable else "❌ 不採用"
+
+            st.markdown(f"""
+            <div class="regime-best-card {card_cls}">
+                <div class="regime-title">{icon} {label}</div>
+                <div class="template-name">{best.template_name}</div>
+                <div class="param-text">{best.param_str}</div>
+                <div class="metric-row" title="各指標を重み付けした複合スコア（0〜1）">
+                    <span class="metric-label">総合スコア</span>
+                    <span class="metric-value">{score:.4f}</span>
+                </div>
+                <div class="metric-row" title="総利益÷総損失。1.0以上で利益＞損失。1.5以上が目安">
+                    <span class="metric-label">損益比率</span>
+                    <span class="metric-value {pf_cls}">{pf:.2f}</span>
+                </div>
+                <div class="metric-row" title="バックテスト期間の累計損益率">
+                    <span class="metric-label">合計損益</span>
+                    <span class="metric-value {pnl_cls}">{pnl:+.2f}%</span>
+                </div>
+                <div class="metric-row" title="勝ちトレードの割合。50%以上なら半分以上で利益">
+                    <span class="metric-label">勝率</span>
+                    <span class="metric-value">{wr:.1f}%</span>
+                </div>
+                <div class="metric-row" title="リスクあたりのリターン。1.0以上が良い、2.0以上は優秀">
+                    <span class="metric-label">シャープ比</span>
+                    <span class="metric-value {sharpe_cls}">{sharpe:.2f}</span>
+                </div>
+                <div class="metric-row" title="最高値から最も下がった幅。小さいほどリスクが低い">
+                    <span class="metric-label">最大DD</span>
+                    <span class="metric-value negative">{dd:.2f}%</span>
+                </div>
+                <div class="metric-row" title="バックテスト期間中の総トレード回数">
+                    <span class="metric-label">取引数</span>
+                    <span class="metric-value">{trades}</span>
+                </div>
+                <div class="verdict {verdict_cls}">{verdict_text}</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+    # 採用サマリー
+    total_regimes = len(regimes_in_results)
+    viable_count = len(viable)
+    if viable_count == total_regimes:
+        st.success(f"全{total_regimes}レジームで採用可能な戦略あり")
+    elif viable_count > 0:
+        st.warning(f"{total_regimes}レジーム中 {viable_count} で採用可能")
+    else:
+        st.error("全レジームで採用基準を満たす戦略なし")
+
+    return viable
+
+
 def _render_results_view():
     """結果ビュー"""
     if st.session_state.optimization_result is None:
@@ -525,47 +634,43 @@ def _render_results_view():
         f"Total: **{result_set.total_combinations}** runs"
     )
 
-    # --- ベスト戦略カード ---
-    best = result_set.best
-    if best:
-        best_strategy_card(
-            score=best.composite_score,
-            template=best.template_name,
-            regime=best.trend_regime,
-            params=best.param_str,
-        )
+    # --- レジーム別ベスト戦略サマリー ---
+    viable_strategies = _render_regime_best_summary(result_set)
 
     st.divider()
 
     # --- フィルター ---
-    section_header("🔎", "Filter & Ranking")
+    section_header("🔎", "絞り込み・ランキング")
 
     fcol1, fcol2, fcol3 = st.columns([1, 1, 2])
     with fcol1:
         filter_regime = st.selectbox(
-            "Regime",
+            "レジーム",
             options=["all"] + list(REGIME_OPTIONS.keys()),
             format_func=lambda x: (
-                "All Regimes" if x == "all"
+                "すべて" if x == "all"
                 else f"{REGIME_ICONS.get(x, '')} {REGIME_OPTIONS.get(x, x)}"
             ),
             key="result_filter_regime",
+            help="相場の状態で絞り込み",
         )
     with fcol2:
         templates_in_results = sorted(set(e.template_name for e in result_set.entries))
         filter_template = st.selectbox(
-            "Template",
+            "テンプレート",
             options=["all"] + templates_in_results,
+            format_func=lambda x: "すべて" if x == "all" else x,
             key="result_filter_template",
+            help="戦略テンプレートで絞り込み",
         )
     with fcol3:
         min_trades = st.slider(
-            "Min Trades",
+            "最低取引数",
             min_value=0,
             max_value=50,
             value=0,
             key="result_min_trades",
-            help="最低トレード数でフィルタ",
+            help="取引回数が少なすぎる結果を除外。5以上推奨",
         )
 
     # フィルタリング
@@ -590,42 +695,61 @@ def _render_results_view():
         st.warning("条件に一致する結果がありません。")
         return
 
-    st.caption(f"Showing {len(filtered.entries)} results")
+    st.caption(f"{len(filtered.entries)} 件表示中")
 
     # --- ランキングテーブル（スタイル付き） ---
     ranking_df = filtered.to_dataframe()
 
-    # カラム設定でスタイリング
+    # カラム設定（日本語ラベル + ヘルプ付き）
     column_config = {
+        "template": st.column_config.TextColumn(
+            "テンプレート",
+            help="使用した戦略テンプレート名",
+        ),
+        "params": st.column_config.TextColumn(
+            "パラメータ",
+            help="テンプレートに適用したパラメータの組み合わせ",
+        ),
+        "regime": st.column_config.TextColumn(
+            "レジーム",
+            help="相場の状態（uptrend=上昇, downtrend=下降, range=レンジ）",
+        ),
         "score": st.column_config.ProgressColumn(
-            "Score",
+            "総合スコア",
+            help="各指標を重み付けした複合スコア（0〜1）。高いほど良い",
             min_value=0,
             max_value=1,
             format="%.4f",
         ),
+        "trades": st.column_config.NumberColumn(
+            "取引数",
+            help="バックテスト期間中の総トレード回数。少なすぎると統計的に信頼できない",
+            format="%d",
+        ),
         "win_rate": st.column_config.NumberColumn(
-            "Win Rate %",
+            "勝率 %",
+            help="勝ちトレードの割合。50%以上なら半分以上のトレードで利益",
             format="%.1f%%",
         ),
         "profit_factor": st.column_config.NumberColumn(
-            "PF",
+            "損益比率",
+            help="総利益 ÷ 総損失。1.0以上で利益が損失を上回る。1.5以上が目安",
             format="%.2f",
         ),
         "total_pnl": st.column_config.NumberColumn(
-            "Total P/L %",
+            "合計損益 %",
+            help="バックテスト期間の累計損益率。プラスなら利益、マイナスなら損失",
             format="%.2f%%",
         ),
         "max_dd": st.column_config.NumberColumn(
-            "Max DD %",
+            "最大DD %",
+            help="最大ドローダウン。最高値から最も下がった幅。小さいほどリスクが低い",
             format="%.2f%%",
         ),
         "sharpe": st.column_config.NumberColumn(
-            "Sharpe",
+            "シャープ比",
+            help="リスクあたりのリターン。1.0以上が良い、2.0以上は優秀",
             format="%.2f",
-        ),
-        "trades": st.column_config.NumberColumn(
-            "Trades",
-            format="%d",
         ),
     }
 
@@ -640,7 +764,7 @@ def _render_results_view():
     st.divider()
 
     # --- チャート ---
-    section_header("📊", "Charts")
+    section_header("📊", "チャート")
 
     chart_col1, chart_col2 = st.columns(2)
     with chart_col1:
@@ -657,10 +781,10 @@ def _render_results_view():
     ]
     if entries_with_result:
         st.divider()
-        section_header("📈", "Equity Curve Overlay", f"Top {min(len(entries_with_result), 10)}")
+        section_header("📈", "資産推移カーブ", f"上位 {min(len(entries_with_result), 10)} 件")
 
         top_n = st.slider(
-            "Top N to display", 1, min(20, len(entries_with_result)),
+            "表示件数", 1, min(20, len(entries_with_result)),
             min(5, len(entries_with_result)), key="equity_top_n"
         )
         equity_fig = create_equity_overlay(entries_with_result, max_entries=top_n)
@@ -668,12 +792,35 @@ def _render_results_view():
 
     st.divider()
 
-    # --- YAMLエクスポート ---
-    section_header("💾", "Export Best Strategy")
+    # --- レジーム切替型YAMLエクスポート ---
+    section_header("💾", "戦略エクスポート")
 
-    if best:
-        yaml_str = yaml.dump(best.config, default_flow_style=False, allow_unicode=True)
+    if viable_strategies:
+        # レジーム切替型の設定を組み立て
+        regime_config = {
+            "symbol": result_set.symbol,
+            "execution_tf": result_set.execution_tf,
+            "htf": result_set.htf,
+            "regime_strategies": {},
+        }
+        for regime, entry in viable_strategies.items():
+            regime_config["regime_strategies"][regime] = {
+                "template": entry.template_name,
+                "params": entry.params,
+                "config": entry.config,
+                "metrics": {
+                    "profit_factor": round(entry.metrics.profit_factor, 2),
+                    "win_rate": round(entry.metrics.win_rate, 1),
+                    "total_pnl": round(entry.metrics.total_profit_pct, 2),
+                    "max_dd": round(entry.metrics.max_drawdown_pct, 2),
+                    "sharpe": round(entry.metrics.sharpe_ratio, 2),
+                    "trades": entry.metrics.total_trades,
+                },
+            }
 
+        yaml_str = yaml.dump(regime_config, default_flow_style=False, allow_unicode=True)
+
+        st.markdown(f"**{len(viable_strategies)}** レジームの採用戦略をエクスポート")
         col_yaml, col_dl = st.columns([3, 1])
         with col_yaml:
             st.code(yaml_str, language="yaml")
@@ -681,7 +828,77 @@ def _render_results_view():
             st.download_button(
                 "📥 Download YAML",
                 data=yaml_str,
-                file_name=f"best_strategy_{best.template_name}.yaml",
+                file_name=f"regime_strategy_{result_set.symbol}.yaml",
                 mime="text/yaml",
                 use_container_width=True,
             )
+    else:
+        st.warning("採用可能な戦略がありません（全レジームで不採用）")
+
+
+def _render_load_view():
+    """保存済み結果の読み込みビュー"""
+    import json
+    from pathlib import Path
+    from optimizer.results import OptimizationResultSet
+
+    section_header("📁", "保存済み結果の読み込み", "results/ フォルダのJSONファイル")
+
+    results_dir = Path("results")
+    if not results_dir.exists():
+        st.warning("results/ フォルダが見つかりません。")
+        return
+
+    json_files = sorted(
+        results_dir.glob("*.json"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+
+    if not json_files:
+        st.info("保存済みの結果ファイルがありません。")
+        return
+
+    file_options = {fp.stem: fp for fp in json_files}
+
+    selected_name = st.selectbox(
+        "ファイルを選択",
+        options=list(file_options.keys()),
+        format_func=lambda x: f"{x} ({file_options[x].stat().st_size / 1024:.0f} KB)",
+        key="load_file_select",
+    )
+
+    if not selected_name:
+        return
+
+    selected_path = file_options[selected_name]
+
+    # メタ情報プレビュー
+    with open(selected_path, "r", encoding="utf-8") as f:
+        meta = json.load(f)
+
+    pcol1, pcol2, pcol3, pcol4 = st.columns(4)
+    with pcol1:
+        st.metric("シンボル", meta.get("symbol", "?"))
+    with pcol2:
+        st.metric("実行TF", meta.get("execution_tf", "?"))
+    with pcol3:
+        st.metric("上位TF", meta.get("htf") or "なし")
+    with pcol4:
+        st.metric("結果数", f"{len(meta.get('results', [])):,}")
+
+    ts = meta.get("timestamp", "")
+    if len(ts) >= 15:
+        display_ts = f"{ts[:4]}/{ts[4:6]}/{ts[6:8]} {ts[9:11]}:{ts[11:13]}:{ts[13:15]}"
+    else:
+        display_ts = ts
+    st.caption(f"保存日時: {display_ts}")
+
+    if st.button("📊 この結果を読み込む", type="primary", use_container_width=True):
+        try:
+            result_set = OptimizationResultSet.from_json(str(selected_path))
+            st.session_state.optimization_result = result_set
+            st.session_state.optimizer_view = "results"
+            st.rerun()
+        except Exception as e:
+            st.error(f"読み込みエラー: {e}")

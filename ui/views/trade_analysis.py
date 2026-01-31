@@ -15,11 +15,15 @@ from ui.components.chart import create_candlestick_chart
 
 def render_trade_analysis_page():
     """トレード分析ページを描画"""
-    st.header("🔍 Trade Analysis")
+    st.header("🔍 トレード分析")
     st.caption("個別トレードの詳細分析・損益統計")
 
     if "backtest_result" not in st.session_state or st.session_state.backtest_result is None:
-        st.warning("No backtest results. Run a backtest first.")
+        st.info(
+            "▶️ **バックテスト結果がありません**\n\n"
+            "トレード分析にはバックテスト結果が必要です。\n\n"
+            "サイドバーの **▶️ バックテスト** ページで戦略を実行してください。"
+        )
         return
 
     result = st.session_state.backtest_result
@@ -27,29 +31,29 @@ def render_trade_analysis_page():
     trades = result.trades
 
     if not trades:
-        st.info("No trades to analyze.")
+        st.info("分析するトレードがありません。")
         return
 
     # 個別トレード分析
-    st.subheader("Individual Trade")
+    st.subheader("個別トレード")
     _render_individual_trade(result)
 
     st.divider()
 
     # 損益分布
-    st.subheader("P/L Distribution")
+    st.subheader("損益分布")
     _render_pl_distribution(trades)
 
     st.divider()
 
     # 勝ち/負け分析
-    st.subheader("Win/Loss Analysis")
+    st.subheader("勝敗分析")
     _render_win_loss_analysis(trades)
 
     st.divider()
 
-    # Exit Type分布
-    st.subheader("Exit Type Distribution")
+    # 決済タイプ分布
+    st.subheader("決済タイプ分布")
     _render_exit_distribution(trades)
 
 
@@ -65,7 +69,7 @@ def _render_individual_trade(result):
         for i, t in enumerate(trades)
     ]
     selected_idx = st.selectbox(
-        "Select Trade",
+        "トレード選択",
         range(len(trades)),
         format_func=lambda x: trade_options[x],
     )
@@ -75,19 +79,19 @@ def _render_individual_trade(result):
     # トレード詳細
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.metric("Side", trade.side.upper())
-        st.metric("Entry Price", f"{trade.entry_price:.6f}")
+        st.metric("売買方向", trade.side.upper())
+        st.metric("エントリー価格", f"{trade.entry_price:.6f}")
     with col2:
-        st.metric("Exit Type", trade.exit_type)
-        st.metric("Exit Price", f"{trade.exit_price:.6f}")
+        st.metric("決済タイプ", trade.exit_type)
+        st.metric("決済価格", f"{trade.exit_price:.6f}")
     with col3:
-        st.metric("P/L", f"{trade.profit_pct:+.2f}%")
-        st.metric("Duration", f"{trade.duration_bars} bars")
+        st.metric("損益", f"{trade.profit_pct:+.2f}%")
+        st.metric("保有期間", f"{trade.duration_bars} 本")
     with col4:
-        st.metric("Entry", str(trade.entry_time)[:19])
-        st.metric("Exit", str(trade.exit_time)[:19])
+        st.metric("エントリー", str(trade.entry_time)[:19])
+        st.metric("決済", str(trade.exit_time)[:19])
 
-    st.caption(f"Reason: {trade.reason}")
+    st.caption(f"理由: {trade.reason}")
 
     # 該当範囲のチャート表示
     if "datetime" in df.columns:
@@ -153,9 +157,9 @@ def _render_pl_distribution(trades):
         )
     )
     fig.update_layout(
-        title="P/L Distribution",
-        xaxis_title="P/L (%)",
-        yaxis_title="Count",
+        title="損益分布",
+        xaxis_title="損益 (%)",
+        yaxis_title="回数",
         template="plotly_dark",
         height=300,
     )
@@ -173,9 +177,9 @@ def _render_pl_distribution(trades):
         )
     )
     fig2.update_layout(
-        title="Cumulative P/L (%)",
-        xaxis_title="Trade #",
-        yaxis_title="Cumulative P/L (%)",
+        title="累計損益 (%)",
+        xaxis_title="トレード #",
+        yaxis_title="累計損益 (%)",
         template="plotly_dark",
         height=300,
     )
@@ -189,24 +193,24 @@ def _render_win_loss_analysis(trades):
 
     col1, col2 = st.columns(2)
     with col1:
-        st.markdown("**Winning Trades**")
+        st.markdown("**勝ちトレード**")
         if wins:
-            st.metric("Count", len(wins))
-            st.metric("Avg P/L", f"{np.mean([t.profit_pct for t in wins]):+.2f}%")
-            st.metric("Best", f"{max(t.profit_pct for t in wins):+.2f}%")
-            st.metric("Avg Duration", f"{np.mean([t.duration_bars for t in wins]):.0f} bars")
+            st.metric("回数", len(wins))
+            st.metric("平均損益", f"{np.mean([t.profit_pct for t in wins]):+.2f}%")
+            st.metric("最大利益", f"{max(t.profit_pct for t in wins):+.2f}%")
+            st.metric("平均保有期間", f"{np.mean([t.duration_bars for t in wins]):.0f} 本")
         else:
-            st.info("No winning trades")
+            st.info("勝ちトレードなし")
 
     with col2:
-        st.markdown("**Losing Trades**")
+        st.markdown("**負けトレード**")
         if losses:
-            st.metric("Count", len(losses))
-            st.metric("Avg P/L", f"{np.mean([t.profit_pct for t in losses]):.2f}%")
-            st.metric("Worst", f"{min(t.profit_pct for t in losses):.2f}%")
-            st.metric("Avg Duration", f"{np.mean([t.duration_bars for t in losses]):.0f} bars")
+            st.metric("回数", len(losses))
+            st.metric("平均損益", f"{np.mean([t.profit_pct for t in losses]):.2f}%")
+            st.metric("最大損失", f"{min(t.profit_pct for t in losses):.2f}%")
+            st.metric("平均保有期間", f"{np.mean([t.duration_bars for t in losses]):.0f} 本")
         else:
-            st.info("No losing trades")
+            st.info("負けトレードなし")
 
 
 def _render_exit_distribution(trades):
@@ -228,7 +232,7 @@ def _render_exit_distribution(trades):
         ]
     )
     fig.update_layout(
-        title="Exit Type Distribution",
+        title="決済タイプ分布",
         template="plotly_dark",
         height=300,
     )

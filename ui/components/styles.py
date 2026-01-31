@@ -246,6 +246,203 @@ def inject_custom_css():
         font-size: 0.85rem;
     }
 
+    /* === レジーム別ベストカード === */
+    .regime-best-card {
+        background-color: #161b22;
+        border: 1px solid #21262d;
+        border-radius: 10px;
+        padding: 16px;
+    }
+
+    .regime-best-card.viable {
+        border-color: #238636;
+    }
+
+    .regime-best-card.not-viable {
+        border-color: #da3633;
+        opacity: 0.7;
+    }
+
+    .regime-best-card .regime-title {
+        font-size: 1rem;
+        font-weight: 600;
+        margin-bottom: 8px;
+    }
+
+    .regime-best-card .template-name {
+        font-size: 0.85rem;
+        color: #58a6ff;
+        font-weight: 500;
+        margin-bottom: 4px;
+    }
+
+    .regime-best-card .param-text {
+        font-size: 0.75rem;
+        color: #8b949e;
+        margin-bottom: 10px;
+    }
+
+    .regime-best-card .metric-row {
+        display: flex;
+        justify-content: space-between;
+        font-size: 0.8rem;
+        padding: 3px 0;
+        border-bottom: 1px solid #21262d;
+    }
+
+    .regime-best-card .metric-row:last-child {
+        border-bottom: none;
+    }
+
+    .regime-best-card .metric-label {
+        color: #8b949e;
+    }
+
+    .regime-best-card .metric-value {
+        font-weight: 600;
+        color: #e6edf3;
+    }
+
+    .regime-best-card .metric-value.positive {
+        color: #3fb950;
+    }
+
+    .regime-best-card .metric-value.negative {
+        color: #f85149;
+    }
+
+    .regime-best-card .verdict {
+        margin-top: 10px;
+        text-align: center;
+        font-size: 0.85rem;
+        font-weight: 600;
+        padding: 6px;
+        border-radius: 6px;
+    }
+
+    .regime-best-card .verdict.pass {
+        background-color: rgba(35, 134, 54, 0.15);
+        color: #3fb950;
+    }
+
+    .regime-best-card .verdict.fail {
+        background-color: rgba(218, 54, 51, 0.15);
+        color: #f85149;
+    }
+
+    /* === サイドバー ワークフローガイド === */
+    .sidebar-guide {
+        padding: 4px 0;
+    }
+
+    .guide-title {
+        font-size: 0.75rem;
+        font-weight: 600;
+        color: #8b949e;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        margin-bottom: 10px;
+    }
+
+    .guide-route {
+        margin-bottom: 10px;
+    }
+
+    .guide-route-label {
+        font-size: 0.7rem;
+        color: #58a6ff;
+        font-weight: 600;
+        margin-bottom: 4px;
+    }
+
+    .guide-flow {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 2px;
+    }
+
+    .guide-step {
+        font-size: 0.7rem;
+        color: #484f58;
+        padding: 2px 6px;
+        border: 1px solid #30363d;
+        border-radius: 4px;
+        background-color: #0d1117;
+        white-space: nowrap;
+    }
+
+    .guide-step.done {
+        color: #3fb950;
+        border-color: #238636;
+        background-color: rgba(35, 134, 54, 0.1);
+    }
+
+    .guide-arrow {
+        color: #30363d;
+        font-size: 0.7rem;
+        padding: 0 1px;
+    }
+
+    /* === ウェルカムセクション（メインエリア） === */
+    .welcome-section {
+        background: linear-gradient(135deg, #161b22 0%, #1c2333 100%);
+        border: 1px solid #21262d;
+        border-radius: 12px;
+        padding: 32px;
+        text-align: center;
+        margin-bottom: 8px;
+    }
+
+    .welcome-title {
+        color: #e6edf3;
+        font-size: 1.6rem;
+        font-weight: 700;
+        margin-bottom: 8px;
+    }
+
+    .welcome-desc {
+        color: #8b949e;
+        font-size: 0.9rem;
+        line-height: 1.6;
+        margin-bottom: 24px;
+    }
+
+    .welcome-routes {
+        display: flex;
+        gap: 16px;
+        justify-content: center;
+        flex-wrap: wrap;
+    }
+
+    .welcome-route {
+        background-color: #0d1117;
+        border: 1px solid #30363d;
+        border-radius: 10px;
+        padding: 20px 24px;
+        min-width: 240px;
+        text-align: center;
+    }
+
+    .welcome-route-title {
+        font-size: 0.85rem;
+        font-weight: 600;
+        color: #58a6ff;
+        margin-bottom: 8px;
+    }
+
+    .welcome-route-desc {
+        font-size: 0.9rem;
+        font-weight: 600;
+        color: #e6edf3;
+        margin-bottom: 6px;
+    }
+
+    .welcome-route-note {
+        font-size: 0.75rem;
+        color: #8b949e;
+    }
+
     /* === サマリーカード（Optimizer結果上部） === */
     .summary-row {
         display: flex;
