@@ -1224,6 +1224,43 @@ def _trim_df(df: "pd.DataFrame", data_period: dict) -> "pd.DataFrame":
     return df
 
 
+def _parse_result_filename(stem: str) -> dict:
+    """結果ファイル名からメタ情報をパース（JSONを開かずに高速判定）"""
+    import re
+    m = re.match(
+        r'^([A-Z0-9]+)_exec([^_]+)_htf([^_]+?)(?:_trim([^_]+))?_(\d{8})_(\d{6})$',
+        stem,
+    )
+    if not m:
+        return {
+            "symbol": "?", "exec_tf": "?", "htf": "?",
+            "is_trimmed": False, "trim_label": "", "date_label": stem,
+        }
+
+    symbol, exec_tf, htf, trim_raw, date_str, time_str = m.groups()
+
+    # 日時ラベル: "01/31 15:52"
+    date_label = f"{date_str[4:6]}/{date_str[6:8]} {time_str[:2]}:{time_str[2:4]}"
+
+    # トリム期間ラベル: "02/01~06/14"
+    trim_label = ""
+    if trim_raw:
+        parts = trim_raw.split("-")
+        if len(parts) == 2 and len(parts[0]) == 4 and len(parts[1]) == 4:
+            trim_label = f"{parts[0][:2]}/{parts[0][2:]}~{parts[1][:2]}/{parts[1][2:]}"
+        else:
+            trim_label = trim_raw
+
+    return {
+        "symbol": symbol,
+        "exec_tf": exec_tf,
+        "htf": htf,
+        "is_trimmed": trim_raw is not None,
+        "trim_label": trim_label,
+        "date_label": date_label,
+    }
+
+
 def _render_load_view():
     """保存済み結果の読み込みビュー（左: 選択、右: プレビュー）"""
     import json
@@ -1247,43 +1284,76 @@ def _render_load_view():
         st.info("保存済みの結果ファイルがありません。")
         return
 
-    # ファイルを分類（ファイル名に _trim が含まれるか）
-    original_files = [fp for fp in json_files if "_trim" not in fp.stem]
-    trimmed_files = [fp for fp in json_files if "_trim" in fp.stem]
+    # 全ファイルのメタ情報をファイル名からパース
+    file_meta = {}
+    for fp in json_files:
+        parsed = _parse_result_filename(fp.stem)
+        file_meta[fp.stem] = {**parsed, "path": fp}
+
+    all_symbols = sorted(set(m["symbol"] for m in file_meta.values()))
+    all_exec_tfs = sorted(set(m["exec_tf"] for m in file_meta.values()))
 
     # === 2カラムレイアウト: 左=選択 / 右=プレビュー ===
     left_col, right_col = st.columns([2, 3])
 
     with left_col:
-        # データソースフィルター
-        filter_opts = []
-        filter_labels = {}
-        if original_files:
-            filter_opts.append("original")
-            filter_labels["original"] = f"📦 オリジナル ({len(original_files)})"
-        if trimmed_files:
-            filter_opts.append("trimmed")
-            filter_labels["trimmed"] = f"✂️ 切り出し ({len(trimmed_files)})"
+        # --- フィルター ---
+        fc1, fc2 = st.columns(2)
+        with fc1:
+            symbol_filter = st.selectbox(
+                "銘柄",
+                options=["すべて"] + all_symbols,
+                key="load_symbol_filter",
+            )
+        with fc2:
+            tf_filter = st.selectbox(
+                "実行TF",
+                options=["すべて"] + all_exec_tfs,
+                key="load_tf_filter",
+            )
 
-        if len(filter_opts) == 0:
-            st.info("結果ファイルがありません。")
-            return
-
-        selected_filter = st.selectbox(
+        source_options = ["すべて", "📦 オリジナル", "✂️ 切り出し"]
+        source_filter = st.radio(
             "データソース",
-            options=filter_opts,
-            format_func=lambda x: filter_labels[x],
+            options=source_options,
+            horizontal=True,
             key="load_source_filter",
+            label_visibility="collapsed",
         )
 
-        display_files = original_files if selected_filter == "original" else trimmed_files
-        file_options = {fp.stem: fp for fp in display_files}
+        # フィルタ適用
+        filtered_stems = []
+        for stem, meta in file_meta.items():
+            if symbol_filter != "すべて" and meta["symbol"] != symbol_filter:
+                continue
+            if tf_filter != "すべて" and meta["exec_tf"] != tf_filter:
+                continue
+            if source_filter == "📦 オリジナル" and meta["is_trimmed"]:
+                continue
+            if source_filter == "✂️ 切り出し" and not meta["is_trimmed"]:
+                continue
+            filtered_stems.append(stem)
+
+        file_options = {s: file_meta[s]["path"] for s in filtered_stems}
+
+        # 読みやすいラベル生成
+        def _format_label(stem):
+            m = file_meta[stem]
+            parts = [f"{m['symbol']} | {m['exec_tf']}→{m['htf']}"]
+            if m["is_trimmed"] and m["trim_label"]:
+                parts.append(f"✂️{m['trim_label']}")
+            parts.append(m["date_label"])
+            return " | ".join(parts)
+
+        display_labels = {s: _format_label(s) for s in filtered_stems}
+
+        st.caption(f"{len(filtered_stems)}件")
 
         selected_names = st.multiselect(
-            "ファイルを選択（複数可）",
-            options=list(file_options.keys()),
+            "ファイルを選択",
+            options=filtered_stems,
             default=[],
-            format_func=lambda x: f"{x} ({file_options[x].stat().st_size / 1024:.0f} KB)",
+            format_func=lambda x: display_labels.get(x, x),
             key="load_file_select_multi",
         )
 
@@ -1334,7 +1404,7 @@ def _render_load_view():
         # アクションボタン
         if selected_names:
             st.divider()
-            btn_col1, btn_col2 = st.columns(2)
+            btn_col1, btn_col2, btn_col3 = st.columns(3)
             with btn_col1:
                 if st.button(
                     "📊 読み込む",
@@ -1370,6 +1440,37 @@ def _render_load_view():
                         st.session_state.comparison_results = loaded
                         st.session_state.optimizer_view = "compare"
                         st.rerun()
+            with btn_col3:
+                if st.button(
+                    f"🗑️ {len(selected_names)}件削除",
+                    use_container_width=True,
+                ):
+                    st.session_state.delete_confirm_files = selected_names.copy()
+
+            # 削除確認
+            if st.session_state.get("delete_confirm_files"):
+                targets = st.session_state.delete_confirm_files
+                st.warning(f"**{len(targets)}件**のファイルを削除しますか？（JSON + CSV）")
+                conf_col1, conf_col2 = st.columns(2)
+                with conf_col1:
+                    if st.button("✅ 削除する", type="primary", use_container_width=True):
+                        deleted = 0
+                        for name in targets:
+                            fp = file_options.get(name)
+                            if fp and fp.exists():
+                                fp.unlink()
+                                deleted += 1
+                                # 対応するCSVも削除
+                                csv_fp = fp.with_suffix(".csv")
+                                if csv_fp.exists():
+                                    csv_fp.unlink()
+                        st.session_state.delete_confirm_files = None
+                        st.toast(f"🗑️ {deleted}件削除しました")
+                        st.rerun()
+                with conf_col2:
+                    if st.button("❌ キャンセル", use_container_width=True):
+                        st.session_state.delete_confirm_files = None
+                        st.rerun()
 
     # === 右カラム: ローソク足プレビュー ===
     with right_col:
@@ -1384,7 +1485,7 @@ def _render_load_view():
         else:
             from ui.components.optimizer_charts import create_ohlcv_preview_chart
 
-            for name in selected_names:
+            for idx, name in enumerate(selected_names):
                 fp = file_options[name]
                 with open(fp, "r", encoding="utf-8") as f:
                     meta = json.load(f)
@@ -1405,7 +1506,7 @@ def _render_load_view():
 
                     if ohlcv_df is not None and not ohlcv_df.empty:
                         fig = create_ohlcv_preview_chart(ohlcv_df, title=chart_title)
-                        st.plotly_chart(fig, use_container_width=True)
+                        st.plotly_chart(fig, use_container_width=True, key=f"preview_chart_{name}_{idx}")
                     else:
                         st.warning(f"{chart_title}: CSVファイルが見つかりません（inputdata/ を確認）")
                 except Exception as e:

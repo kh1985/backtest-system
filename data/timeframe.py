@@ -57,24 +57,8 @@ class TimeframeAligner:
 
             for col in indicator_cols:
                 suffixed = f"{col}_{tf_name}"
-                # 上位TFの値を基準TFにマージ（forward-fill）
-                merged = base_df.index.to_frame(name="base_dt")
-                merged[suffixed] = None
-
-                # 上位TFの各バーの値を、次のバーが始まるまでの基準TFバーに割り当て
-                for i in range(len(tf_data)):
-                    val = tf_data[col].iloc[i]
-                    ts = tf_data.index[i]
-
-                    # 次の上位TFバーの開始時刻
-                    if i + 1 < len(tf_data):
-                        next_ts = tf_data.index[i + 1]
-                    else:
-                        next_ts = base_df.index[-1] + pd.Timedelta(seconds=1)
-
-                    # 該当する基準TFバーにforward-fill
-                    mask = (base_df.index >= ts) & (base_df.index < next_ts)
-                    base_df.loc[mask, suffixed] = val
+                # 上位TFの値を基準TFにreindex + forward-fill（ベクトル演算）
+                base_df[suffixed] = tf_data[col].reindex(base_df.index, method="ffill")
 
         base_df = base_df.reset_index()
         return base_df

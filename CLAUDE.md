@@ -87,6 +87,23 @@ backtest-system/
 - ファイル名・関数名・クラス名・変数名は英語
 - UI表示テキスト・コメント・説明は日本語
 
+### パフォーマンス最優先ルール（必須）
+
+数値データ・OHLCV処理では**常に最速の実装**を選ぶこと。1分足データ（数十万行）を扱うため、遅いコードは致命的。
+
+**禁止パターン:**
+- `for row in df.iterrows()` / `for row in df.itertuples()` でのループ処理
+- Python for文による行単位のDataFrame操作
+- リスト内包表記で1行ずつ計算してからDataFrameに変換
+
+**必須パターン:**
+- pandas のベクトル演算（`df["col"] = df["a"] + df["b"]`）
+- numpy の配列演算（`np.where()`, `np.maximum()`, `np.cumsum()` 等）
+- pandas の `.shift()`, `.rolling()`, `.expanding()`, `.cummax()`, `.clip()` 等
+- boolean indexing（`df[df["rsi"] < 30]`）
+
+**判断基準:** 「Pythonのforループで書けるが、numpy/pandasのベクトル演算でも書ける」場合は、**例外なくベクトル演算を使う**。
+
 ## Workflow rules for Claude Code
 
 - 複雑な変更は必ず最初にPLAN提示

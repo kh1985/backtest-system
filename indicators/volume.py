@@ -26,16 +26,11 @@ class VWAP(Indicator):
             # datetimeカラムがない場合は累積で計算
             date = pd.Series(0, index=df.index)
 
-        groups = df.groupby(date)
-        vwap_values = pd.Series(np.nan, index=df.index)
-
-        for _, group in groups:
-            idx = group.index
-            tp_vol = (typical_price.loc[idx] * df["volume"].loc[idx]).cumsum()
-            cum_vol = df["volume"].loc[idx].cumsum()
-            vwap_values.loc[idx] = tp_vol / cum_vol.replace(0, float("nan"))
-
-        df["vwap"] = vwap_values
+        # groupby + cumsum でベクトル演算（forループ不要）
+        tp_vol = typical_price * df["volume"]
+        cum_tp_vol = tp_vol.groupby(date).cumsum()
+        cum_vol = df["volume"].groupby(date).cumsum()
+        df["vwap"] = cum_tp_vol / cum_vol.replace(0, np.nan)
         return df
 
     @property
