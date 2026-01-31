@@ -349,6 +349,60 @@ def _render_config_view():
         )
 
 
+def _save_results(result_set):
+    """最適化結果をCSV・JSONでファイルに保存"""
+    import json
+    from pathlib import Path
+    from datetime import datetime
+
+    results_dir = Path("results")
+    results_dir.mkdir(exist_ok=True)
+
+    # ファイル名: BTCUSDT_exec15m_htf4h_20260131_143000
+    sym = result_set.symbol or "UNKNOWN"
+    etf = result_set.execution_tf or "?"
+    htf = result_set.htf or "none"
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    base_name = f"{sym}_exec{etf}_htf{htf}_{ts}"
+
+    # CSV保存
+    df = result_set.to_dataframe()
+    csv_path = results_dir / f"{base_name}.csv"
+    df.to_csv(csv_path, index=False)
+
+    # JSON保存（configも含む完全版）
+    json_rows = []
+    for e in result_set.ranked():
+        json_rows.append({
+            "template": e.template_name,
+            "params": e.params,
+            "regime": e.trend_regime,
+            "score": round(e.composite_score, 4),
+            "metrics": {
+                "trades": e.metrics.total_trades,
+                "win_rate": round(e.metrics.win_rate, 1),
+                "profit_factor": round(e.metrics.profit_factor, 2),
+                "total_pnl": round(e.metrics.total_profit_pct, 2),
+                "max_dd": round(e.metrics.max_drawdown_pct, 2),
+                "sharpe": round(e.metrics.sharpe_ratio, 2),
+            },
+            "config": e.config,
+        })
+
+    json_path = results_dir / f"{base_name}.json"
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump({
+            "symbol": sym,
+            "execution_tf": etf,
+            "htf": htf,
+            "total_combinations": result_set.total_combinations,
+            "timestamp": ts,
+            "results": json_rows,
+        }, f, ensure_ascii=False, indent=2)
+
+    return str(csv_path)
+
+
 def _run_optimization(
     exec_tf, htf, trend_method, target_regimes,
     selected_templates, custom_ranges, scoring_weights,
@@ -433,10 +487,16 @@ def _run_optimization(
 
     st.session_state.optimization_result = result_set
     progress_bar.progress(1.0, text=f"✅ Done! [{elapsed:.1f}s]")
+
+    # 結果をファイルに自動保存
+    saved_path = _save_results(result_set)
+
     st.success(
         f"**{result_set.total_combinations}** results in **{elapsed:.1f}s** "
         f"(Workers: {n_workers})"
     )
+    if saved_path:
+        st.caption(f"💾 保存先: `{saved_path}`")
 
     # 自動で結果ビューに切り替え
     st.session_state.optimizer_view = "results"
