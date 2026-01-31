@@ -1542,7 +1542,7 @@ def _get_regime_best_with_viability(result_set):
     result = {}
     for regime in regimes:
         regime_set = result_set.filter_regime(regime)
-        best = regime_set.best
+        best = regime_set.best_by_pnl
         if best:
             pf = best.metrics.profit_factor
             pnl = best.metrics.total_profit_pct
@@ -1699,7 +1699,7 @@ def _render_meta_analysis_view(comparison_results):
             templates = []
             for rs in comparison_results:
                 regime_set = rs.filter_regime(regime)
-                best = regime_set.best
+                best = regime_set.best_by_pnl
                 if best:
                     templates.append(best.template_name)
             if templates:
@@ -1726,7 +1726,7 @@ def _render_meta_analysis_view(comparison_results):
             templates = []
             for rs in comparison_results:
                 regime_set = rs.filter_regime(regime)
-                best = regime_set.best
+                best = regime_set.best_by_pnl
                 if best:
                     templates.append(best.template_name)
 
@@ -1748,7 +1748,7 @@ def _render_meta_analysis_view(comparison_results):
             param_stats = {}
             for rs in comparison_results:
                 regime_set = rs.filter_regime(regime)
-                best = regime_set.best
+                best = regime_set.best_by_pnl
                 if best and best.template_name == most_common_tpl:
                     for k, v in best.params.items():
                         try:
@@ -1839,7 +1839,7 @@ def _render_compare_regime_cards(comparison_results):
             for col, rs in zip(cols, comparison_results):
                 with col:
                     regime_set = rs.filter_regime(regime)
-                    best = regime_set.best
+                    best = regime_set.best_by_pnl
                     if not best:
                         st.caption(f"**{rs.symbol}**: データなし")
                         continue
@@ -1882,7 +1882,7 @@ def _render_compare_commonality(comparison_results):
         bests = []
         for rs in comparison_results:
             regime_set = rs.filter_regime(regime)
-            best = regime_set.best
+            best = regime_set.best_by_pnl
             if best:
                 bests.append({"symbol": rs.symbol, "entry": best})
 
