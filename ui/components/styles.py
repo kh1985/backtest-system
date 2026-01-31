@@ -472,6 +472,17 @@ def inject_custom_css():
         letter-spacing: 0.5px;
         margin-top: 4px;
     }
+
+    /* === Multiselect ドロップダウン切れ防止 === */
+    div[data-baseweb="popover"] {
+        max-height: 400px;
+        overflow-y: auto;
+    }
+
+    div[data-baseweb="popover"] ul {
+        max-height: 360px;
+        overflow-y: auto;
+    }
     </style>
     """, unsafe_allow_html=True)
 

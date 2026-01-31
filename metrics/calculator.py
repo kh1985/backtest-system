@@ -61,10 +61,12 @@ def calculate_metrics(
     )
     max_dd = float(np.max(drawdown)) if len(drawdown) > 0 else 0.0
 
-    # シャープレシオ
+    # シャープレシオ（std が極小の場合に巨大値になるのを防止）
     returns = np.diff(eq) / eq[:-1] if len(eq) > 1 else np.array([])
-    if len(returns) > 1 and np.std(returns) > 0:
+    if len(returns) > 1 and np.std(returns) > 1e-10:
         sharpe = float(np.mean(returns) / np.std(returns) * np.sqrt(252))
+        if not np.isfinite(sharpe):
+            sharpe = 0.0
     else:
         sharpe = 0.0
 
@@ -118,8 +120,10 @@ def calculate_metrics_from_arrays(
     max_dd = float(np.max(drawdown)) if len(drawdown) > 0 else 0.0
 
     returns = np.diff(equity_curve) / equity_curve[:-1] if len(equity_curve) > 1 else np.array([])
-    if len(returns) > 1 and np.std(returns) > 0:
+    if len(returns) > 1 and np.std(returns) > 1e-10:
         sharpe = float(np.mean(returns) / np.std(returns) * np.sqrt(252))
+        if not np.isfinite(sharpe):
+            sharpe = 0.0
     else:
         sharpe = 0.0
 

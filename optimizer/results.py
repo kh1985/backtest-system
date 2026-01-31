@@ -36,6 +36,9 @@ class OptimizationResultSet:
     symbol: str = ""
     execution_tf: str = ""
     htf: str = ""
+    data_source: str = "original"  # "original" or "trimmed"
+    data_period_start: str = ""  # 切り出し開始日時 (例: "2025-01-15")
+    data_period_end: str = ""  # 切り出し終了日時 (例: "2025-01-25")
 
     def add(self, entry: OptimizationEntry):
         self.entries.append(entry)
@@ -56,6 +59,9 @@ class OptimizationResultSet:
             symbol=self.symbol,
             execution_tf=self.execution_tf,
             htf=self.htf,
+            data_source=self.data_source,
+            data_period_start=self.data_period_start,
+            data_period_end=self.data_period_end,
         )
         return result
 
@@ -67,6 +73,9 @@ class OptimizationResultSet:
             symbol=self.symbol,
             execution_tf=self.execution_tf,
             htf=self.htf,
+            data_source=self.data_source,
+            data_period_start=self.data_period_start,
+            data_period_end=self.data_period_end,
         )
         return result
 
@@ -150,9 +159,13 @@ class OptimizationResultSet:
             )
             entries.append(entry)
 
+        data_period = data.get("data_period", {})
         return cls(
             entries=entries,
             symbol=data.get("symbol", ""),
             execution_tf=data.get("execution_tf", ""),
             htf=data.get("htf", ""),
+            data_source=data.get("data_source", "original"),
+            data_period_start=data_period.get("start", ""),
+            data_period_end=data_period.get("end", ""),
         )
