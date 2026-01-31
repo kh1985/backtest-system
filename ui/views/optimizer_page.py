@@ -96,6 +96,7 @@ def _render_config_view():
     """設定ビュー"""
 
     datasets = st.session_state.datasets
+    trimmed_list = st.session_state.get("trimmed_datasets", [])
 
     # --- 0. データセット選択 ---
     section_header("📦", "データセット", "最適化に使用するデータ")
@@ -108,8 +109,37 @@ def _render_config_view():
         key="opt_symbol",
     )
 
-    # 選択したシンボルのTF一覧
-    active_tf_dict = datasets[selected_symbol]
+    # データソース選択（オリジナル or 切り出し）
+    source_options = ["original"]
+    source_labels = {"original": f"📦 オリジナル（全期間）"}
+    sym_trimmed = [e for e in trimmed_list if e["symbol"] == selected_symbol]
+    for entry in sym_trimmed:
+        source_options.append(entry["id"])
+        source_labels[entry["id"]] = f"✂️ {entry['label']}"
+
+    if len(source_options) > 1:
+        selected_source = st.selectbox(
+            "データソース",
+            options=source_options,
+            format_func=lambda x: source_labels[x],
+            key="opt_data_source",
+            help="オリジナルの全期間データ、または切り出した期間データを選択",
+        )
+    else:
+        selected_source = "original"
+
+    # 選択したデータソースのTF辞書を取得
+    if selected_source == "original":
+        active_tf_dict = datasets[selected_symbol]
+    else:
+        trimmed_entry = next(
+            (e for e in trimmed_list if e["id"] == selected_source), None
+        )
+        if trimmed_entry:
+            active_tf_dict = trimmed_entry["data"]
+        else:
+            active_tf_dict = datasets[selected_symbol]
+
     loaded_tfs = list(active_tf_dict.keys())
 
     # 選択シンボルの情報表示

@@ -11,7 +11,7 @@ from pathlib import Path
 
 from data.csv_loader import TradingViewCSVLoader
 from data.binance_loader import BinanceCSVLoader
-from data.base import Timeframe
+from data.base import Timeframe, OHLCVData
 from ui.components.chart import create_candlestick_chart
 
 
@@ -404,16 +404,39 @@ def _render_data_preview():
     with col4:
         st.caption(f"終了: {str(ohlcv.end_time)[:19]}" if ohlcv.end_time else "")
 
-    # チャート
-    max_bars = st.slider(
-        "表示本数",
-        min_value=50,
-        max_value=ohlcv.bars,
-        value=min(500, ohlcv.bars),
+    # チャート — レンジスライダーで開始・終了を両方選択可能
+    last_idx = ohlcv.bars - 1
+    default_start = max(0, ohlcv.bars - 500)
+
+    bar_range = st.slider(
+        "表示範囲",
+        min_value=0,
+        max_value=last_idx,
+        value=(default_start, last_idx),
         key="preview_bars",
-        help="チャートに表示するローソク足の本数",
+        help="左右のハンドルをドラッグして表示範囲を選択",
     )
-    display_df = ohlcv.df.tail(max_bars).copy()
+    display_df = ohlcv.df.iloc[bar_range[0]:bar_range[1] + 1].copy()
+
+    # 選択範囲の日時を表示 + 切り出しボタン
+    is_trimmed = bar_range[0] != 0 or bar_range[1] != last_idx
+    if "datetime" in display_df.columns and not display_df.empty:
+        range_start = str(display_df["datetime"].iloc[0])[:19]
+        range_end = str(display_df["datetime"].iloc[-1])[:19]
+        st.caption(f"選択範囲: {range_start} 〜 {range_end}（{len(display_df):,} 本）")
+
+    if is_trimmed and "datetime" in display_df.columns and not display_df.empty:
+        if st.button(
+            f"✂️ この範囲で切り出し保存（全TF対象）",
+            type="primary",
+            use_container_width=True,
+            help="選択した日時範囲で全タイムフレームのデータを切り出して別途保存（元データは変更しません）",
+        ):
+            _save_trimmed_dataset(
+                selected_sym, tf_dict,
+                display_df["datetime"].iloc[0],
+                display_df["datetime"].iloc[-1],
+            )
 
     fig = create_candlestick_chart(
         display_df,
@@ -424,7 +447,105 @@ def _render_data_preview():
     # データテーブル
     with st.expander("生データ"):
         st.dataframe(
-            ohlcv.df.tail(100),
+            display_df.tail(100),
             use_container_width=True,
             hide_index=True,
         )
+
+    # 保存済み切り出しデータ一覧
+    _render_trimmed_datasets()
+
+
+def _save_trimmed_dataset(symbol, tf_dict, start_dt, end_dt):
+    """選択日時範囲で全TFのデータを切り出して保存"""
+    MAX_TRIMMED = 20
+
+    trimmed_data = {}
+    for tf_str, ohlcv in tf_dict.items():
+        if "datetime" not in ohlcv.df.columns:
+            continue
+        mask = (ohlcv.df["datetime"] >= start_dt) & (ohlcv.df["datetime"] <= end_dt)
+        filtered_df = ohlcv.df.loc[mask].copy().reset_index(drop=True)
+        if filtered_df.empty:
+            continue
+        trimmed_data[tf_str] = OHLCVData(
+            df=filtered_df,
+            symbol=ohlcv.symbol,
+            timeframe=ohlcv.timeframe,
+            source=getattr(ohlcv, "source", ""),
+        )
+
+    if not trimmed_data:
+        st.error("指定範囲にデータが存在しません")
+        return
+
+    start_str = str(start_dt)[:10]
+    end_str = str(end_dt)[:10]
+    entry_id = f"{symbol}_{start_str}_{end_str}"
+    label = f"{symbol}: {start_str} ~ {end_str}"
+
+    # 同じIDがあれば上書き
+    trimmed_list = st.session_state.trimmed_datasets
+    trimmed_list = [e for e in trimmed_list if e["id"] != entry_id]
+
+    tf_summary = ", ".join(
+        f"{tf}({d.bars:,})" for tf, d in trimmed_data.items()
+    )
+
+    trimmed_list.append({
+        "id": entry_id,
+        "symbol": symbol,
+        "label": label,
+        "start_dt": start_dt,
+        "end_dt": end_dt,
+        "data": trimmed_data,
+    })
+
+    # 上限超過時は古い順に削除
+    if len(trimmed_list) > MAX_TRIMMED:
+        trimmed_list = trimmed_list[-MAX_TRIMMED:]
+
+    st.session_state.trimmed_datasets = trimmed_list
+    st.success(f"切り出し保存: {label}（{tf_summary}）")
+    st.rerun()
+
+
+def _render_trimmed_datasets():
+    """保存済み切り出しデータの一覧"""
+    trimmed_list = st.session_state.get("trimmed_datasets", [])
+    if not trimmed_list:
+        return
+
+    st.divider()
+    st.subheader("✂️ 切り出しデータ")
+    st.caption(f"{len(trimmed_list)} / 20 件保存済み（オプティマイザーで使用可能）")
+
+    rows = []
+    for entry in trimmed_list:
+        tfs = ", ".join(
+            f"{tf}({d.bars:,})" for tf, d in entry["data"].items()
+        )
+        rows.append({
+            "シンボル": entry["symbol"],
+            "期間": f"{str(entry['start_dt'])[:10]} ~ {str(entry['end_dt'])[:10]}",
+            "タイムフレーム": tfs,
+        })
+
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+    # 削除
+    col_del1, col_del2 = st.columns([3, 1])
+    with col_del1:
+        del_options = [e["id"] for e in trimmed_list]
+        del_target = st.selectbox(
+            "削除する切り出しデータ",
+            options=[""] + del_options,
+            format_func=lambda x: "選択..." if x == "" else x,
+            key="del_trimmed",
+        )
+    with col_del2:
+        if del_target and st.button("🗑 削除", key="del_trimmed_btn", use_container_width=True):
+            st.session_state.trimmed_datasets = [
+                e for e in trimmed_list if e["id"] != del_target
+            ]
+            st.rerun()

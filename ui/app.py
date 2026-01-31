@@ -56,6 +56,8 @@ def main():
         st.session_state.backtest_result = None
     if "backtest_metrics" not in st.session_state:
         st.session_state.backtest_metrics = None
+    if "trimmed_datasets" not in st.session_state:
+        st.session_state.trimmed_datasets = []  # [{id, symbol, label, start_dt, end_dt, data: {tf: OHLCVData}}]
 
     # ステータス判定
     has_data = len(st.session_state.datasets) > 0
