@@ -162,10 +162,10 @@ def _backtest_loop(
             entry_idx = i
 
             if is_long:
-                tp_price = entry_price * (1.0 + tp_pct / 100.0)
+                tp_price = entry_price * (1.0 + tp_pct / 100.0) if tp_pct > 0.0 else 1e18
                 sl_price = entry_price * (1.0 - sl_pct / 100.0)
             else:
-                tp_price = entry_price * (1.0 - tp_pct / 100.0)
+                tp_price = entry_price * (1.0 - tp_pct / 100.0) if tp_pct > 0.0 else -1.0
                 sl_price = entry_price * (1.0 + sl_pct / 100.0)
 
             highest_price = entry_price

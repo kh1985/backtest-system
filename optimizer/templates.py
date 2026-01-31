@@ -529,3 +529,83 @@ _register(StrategyTemplate(
         ParameterRange("overbought", 70, 85, 5, "int"),
     ],
 ))
+
+# 13. Trend Pullback Long（上昇トレンド押し目買い）
+_register(StrategyTemplate(
+    name="trend_pullback_long",
+    description="上昇トレンドの押し目（RSI一時下落）でロング、トレーリングストップで利益延伸",
+    config_template={
+        "name": "trend_pullback_long",
+        "side": "long",
+        "indicators": [
+            {"type": "rsi", "period": "{rsi_period}"},
+        ],
+        "entry_conditions": [
+            {
+                "type": "threshold",
+                "column": "rsi_{rsi_period}",
+                "operator": ">=",
+                "value": "{rsi_low}",
+            },
+            {
+                "type": "threshold",
+                "column": "rsi_{rsi_period}",
+                "operator": "<=",
+                "value": "{rsi_high}",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 0,
+            "stop_loss_pct": "{sl_pct}",
+            "trailing_stop_pct": "{trailing_pct}",
+        },
+    },
+    param_ranges=[
+        ParameterRange("rsi_period", 14, 14, 1, "int"),
+        ParameterRange("rsi_low", 30, 40, 5, "int"),
+        ParameterRange("rsi_high", 45, 55, 5, "int"),
+        ParameterRange("trailing_pct", 1.0, 3.0, 0.5, "float"),
+        ParameterRange("sl_pct", 1.0, 2.0, 0.5, "float"),
+    ],
+))
+
+# 14. Trend Pullback Short（下落トレンド戻り売り）
+_register(StrategyTemplate(
+    name="trend_pullback_short",
+    description="下落トレンドの戻り（RSI一時上昇）でショート、トレーリングストップで利益延伸",
+    config_template={
+        "name": "trend_pullback_short",
+        "side": "short",
+        "indicators": [
+            {"type": "rsi", "period": "{rsi_period}"},
+        ],
+        "entry_conditions": [
+            {
+                "type": "threshold",
+                "column": "rsi_{rsi_period}",
+                "operator": ">=",
+                "value": "{rsi_low}",
+            },
+            {
+                "type": "threshold",
+                "column": "rsi_{rsi_period}",
+                "operator": "<=",
+                "value": "{rsi_high}",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 0,
+            "stop_loss_pct": "{sl_pct}",
+            "trailing_stop_pct": "{trailing_pct}",
+        },
+    },
+    param_ranges=[
+        ParameterRange("rsi_period", 14, 14, 1, "int"),
+        ParameterRange("rsi_low", 45, 55, 5, "int"),
+        ParameterRange("rsi_high", 60, 70, 5, "int"),
+        ParameterRange("trailing_pct", 1.0, 3.0, 0.5, "float"),
+        ParameterRange("sl_pct", 1.0, 2.0, 0.5, "float"),
+    ],
+))
