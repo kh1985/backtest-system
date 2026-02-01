@@ -30,3 +30,4 @@ nul
 .DS_Store
 inputdata/
 results/
+results_backup/

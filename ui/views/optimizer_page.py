@@ -5,6 +5,8 @@ Optimizerページ
 設定 → 結果の2ビュー構成。最適化完了後は自動で結果表示に切り替え。
 """
 
+import base64
+import json
 import os
 import time
 from collections import Counter
@@ -56,6 +58,8 @@ def render_optimizer_page():
         st.session_state.regime_switching_result = None
     if "validated_result" not in st.session_state:
         st.session_state.validated_result = None
+    if "wfa_result" not in st.session_state:
+        st.session_state.wfa_result = None
 
     has_results = st.session_state.optimization_result is not None
     has_data = bool(st.session_state.get("datasets"))
@@ -159,10 +163,14 @@ def _render_config_view():
     # 選択したデータソースのTF辞書を取得
     if selected_source == "original":
         active_tf_dict = datasets[selected_symbol]
+        # データの実際の期間を取得
+        _any_ohlcv = next(iter(active_tf_dict.values()))
+        _ps = str(_any_ohlcv.start_time)[:10] if _any_ohlcv.start_time else ""
+        _pe = str(_any_ohlcv.end_time)[:10] if _any_ohlcv.end_time else ""
         st.session_state.opt_data_source_info = {
             "source": "original",
-            "period_start": "",
-            "period_end": "",
+            "period_start": _ps,
+            "period_end": _pe,
         }
     else:
         trimmed_entry = next(
@@ -177,10 +185,13 @@ def _render_config_view():
             }
         else:
             active_tf_dict = datasets[selected_symbol]
+            _any_ohlcv = next(iter(active_tf_dict.values()))
+            _ps = str(_any_ohlcv.start_time)[:10] if _any_ohlcv.start_time else ""
+            _pe = str(_any_ohlcv.end_time)[:10] if _any_ohlcv.end_time else ""
             st.session_state.opt_data_source_info = {
                 "source": "original",
-                "period_start": "",
-                "period_end": "",
+                "period_start": _ps,
+                "period_end": _pe,
             }
 
     loaded_tfs = list(active_tf_dict.keys())
@@ -400,18 +411,36 @@ def _render_config_view():
 
     st.divider()
 
-    # --- 5. OOS（Out-of-Sample）検証 ---
-    section_header("🛡️", "OOS検証", "過学習防止のためのデータ分割検証")
+    # --- 5. 検証モード ---
+    section_header("🛡️", "検証設定", "過学習防止のための検証方式")
 
-    oos_enabled = st.checkbox(
-        "OOS検証を有効化",
-        value=True,
-        key="opt_oos_enabled",
-        help="データをTrain/Validation/Testに3分割し、"
-             "グリッドサーチの過学習を検出します",
+    validation_mode = st.radio(
+        "検証モード",
+        options=["off", "oos_3split", "wfa"],
+        format_func=lambda x: {
+            "off": "OFF（検証なし）",
+            "oos_3split": "OOS 3分割（Train/Val/Test）",
+            "wfa": "Walk-Forward Analysis",
+        }[x],
+        horizontal=True,
+        key="opt_validation_mode",
+        index=1,
     )
 
-    if oos_enabled:
+    # デフォルト値
+    oos_train_pct = 60
+    oos_val_pct = 20
+    oos_test_pct = 20
+    oos_top_n = 10
+    oos_min_trades = 30
+    wfa_n_folds = 5
+    wfa_min_is_pct = 40
+    wfa_use_val = True
+    wfa_val_pct = 20
+    wfa_top_n = 10
+    wfa_min_trades = 30
+
+    if validation_mode == "oos_3split":
         oos_col1, oos_col2, oos_col3, oos_col4 = st.columns(4)
         with oos_col1:
             oos_train_pct = st.slider(
@@ -439,7 +468,6 @@ def _render_config_view():
                 key="opt_oos_top_n",
                 help="Train上位N件をValidationで再評価",
             )
-        # 2行目: Val最低トレード数
         oos_min_trades = st.number_input(
             "Val最低トレード数",
             value=30,
@@ -449,12 +477,45 @@ def _render_config_view():
             key="opt_oos_min_trades",
             help="Trainで最低この回数以上トレードしたエントリーのみValに通す（0=フィルタなし）",
         )
-    else:
-        oos_train_pct = 60
-        oos_val_pct = 20
-        oos_test_pct = 20
-        oos_top_n = 10
-        oos_min_trades = 30
+
+    elif validation_mode == "wfa":
+        wfa_col1, wfa_col2, wfa_col3 = st.columns(3)
+        with wfa_col1:
+            wfa_n_folds = st.number_input(
+                "フォールド数", value=5, min_value=3, max_value=10,
+                key="opt_wfa_n_folds",
+                help="データを何分割してWFAを実行するか",
+            )
+        with wfa_col2:
+            wfa_min_is_pct = st.slider(
+                "最小IS割合 (%)", 30, 60, 40, 5,
+                key="opt_wfa_min_is",
+                help="最初のフォールドのIn-Sample最小割合",
+            )
+        with wfa_col3:
+            wfa_use_val = st.checkbox(
+                "IS内Val分割",
+                value=True,
+                key="opt_wfa_use_val",
+                help="IS期間内でさらにTrain/Valに分割してベスト選択",
+            )
+        if wfa_use_val:
+            wfa_vcol1, wfa_vcol2, wfa_vcol3 = st.columns(3)
+            with wfa_vcol1:
+                wfa_val_pct = st.slider(
+                    "IS内Val (%)", 10, 30, 20, 5,
+                    key="opt_wfa_val_pct",
+                )
+            with wfa_vcol2:
+                wfa_top_n = st.number_input(
+                    "Val Top-N", value=10, min_value=3, max_value=50,
+                    key="opt_wfa_top_n",
+                )
+            with wfa_vcol3:
+                wfa_min_trades = st.number_input(
+                    "Val最低トレード数", value=30, min_value=0, max_value=200,
+                    step=5, key="opt_wfa_min_trades",
+                )
 
     st.divider()
 
@@ -497,11 +558,17 @@ def _render_config_view():
             adx_trend_th=float(adx_trend_th),
             adx_range_th=float(adx_range_th),
             n_workers=int(n_workers),
-            oos_enabled=oos_enabled,
+            validation_mode=validation_mode,
             oos_train_pct=oos_train_pct,
             oos_val_pct=oos_val_pct,
             oos_top_n=int(oos_top_n),
             oos_min_trades=int(oos_min_trades),
+            wfa_n_folds=int(wfa_n_folds),
+            wfa_min_is_pct=int(wfa_min_is_pct),
+            wfa_use_val=wfa_use_val,
+            wfa_val_pct=int(wfa_val_pct),
+            wfa_top_n=int(wfa_top_n),
+            wfa_min_trades=int(wfa_min_trades),
         )
 
     # --- バッチ実行 ---
@@ -522,6 +589,17 @@ def _render_config_view():
         adx_trend_th=float(adx_trend_th),
         adx_range_th=float(adx_range_th),
         n_workers=int(n_workers),
+        validation_mode=validation_mode,
+        oos_train_pct=oos_train_pct,
+        oos_val_pct=oos_val_pct,
+        oos_top_n=int(oos_top_n),
+        oos_min_trades=int(oos_min_trades),
+        wfa_n_folds=int(wfa_n_folds),
+        wfa_min_is_pct=int(wfa_min_is_pct),
+        wfa_use_val=wfa_use_val,
+        wfa_val_pct=int(wfa_val_pct),
+        wfa_top_n=int(wfa_top_n),
+        wfa_min_trades=int(wfa_min_trades),
     )
 
 
@@ -531,6 +609,10 @@ def _render_batch_section(
     initial_capital, commission, slippage,
     ma_fast, ma_slow, adx_period, adx_trend_th, adx_range_th,
     n_workers,
+    validation_mode="off",
+    oos_train_pct=60, oos_val_pct=20, oos_top_n=10, oos_min_trades=30,
+    wfa_n_folds=5, wfa_min_is_pct=40, wfa_use_val=True,
+    wfa_val_pct=20, wfa_top_n=10, wfa_min_trades=30,
 ):
     """バッチ実行セクション（複数銘柄×データソースを一括実行）"""
     datasets = st.session_state.get("datasets", {})
@@ -623,6 +705,17 @@ def _render_batch_section(
                 adx_trend_th=adx_trend_th,
                 adx_range_th=adx_range_th,
                 n_workers=n_workers,
+                validation_mode=validation_mode,
+                oos_train_pct=oos_train_pct,
+                oos_val_pct=oos_val_pct,
+                oos_top_n=oos_top_n,
+                oos_min_trades=oos_min_trades,
+                wfa_n_folds=wfa_n_folds,
+                wfa_min_is_pct=wfa_min_is_pct,
+                wfa_use_val=wfa_use_val,
+                wfa_val_pct=wfa_val_pct,
+                wfa_top_n=wfa_top_n,
+                wfa_min_trades=wfa_min_trades,
             )
 
 
@@ -632,19 +725,31 @@ def _run_batch_optimization(
     initial_capital, commission, slippage,
     ma_fast, ma_slow, adx_period, adx_trend_th, adx_range_th,
     n_workers,
+    validation_mode="off",
+    oos_train_pct=60, oos_val_pct=20, oos_top_n=10, oos_min_trades=30,
+    wfa_n_folds=5, wfa_min_is_pct=40, wfa_use_val=True,
+    wfa_val_pct=20, wfa_top_n=10, wfa_min_trades=30,
 ):
-    """バッチ最適化を順次実行"""
+    """バッチ最適化を順次実行（検証モード対応）"""
     all_results = []
+    batch_validated = {}  # symbol -> ValidatedResultSet
+    batch_wfa = {}  # symbol -> WFAResultSet
     n_total = len(targets)
 
-    overall_progress = st.progress(0, text="バッチ実行準備中...")
+    mode_label = {
+        "off": "検証なし",
+        "oos_3split": "OOS 3分割",
+        "wfa": "Walk-Forward",
+    }.get(validation_mode, validation_mode)
+
+    overall_progress = st.progress(0, text=f"バッチ実行準備中... ({mode_label})")
     status_text = st.empty()
 
     batch_start = time.time()
 
     for i, target in enumerate(targets):
         label = target["label"]
-        status_text.markdown(f"**[{i+1}/{n_total}]** {label}")
+        status_text.markdown(f"**[{i+1}/{n_total}]** {label} ({mode_label})")
         overall_progress.progress(i / n_total, text=f"[{i+1}/{n_total}] {label}")
 
         item_progress = st.progress(0, text=f"{label}: 開始...")
@@ -654,11 +759,11 @@ def _run_batch_optimization(
             elapsed = time.time() - item_start
             speed = current / elapsed if elapsed > 0 else 0
             item_progress.progress(
-                current / total,
+                current / total if total > 0 else 0,
                 text=f"{label}: {current}/{total} ({speed:.0f} runs/s)",
             )
 
-        result_set = _execute_single_optimization(
+        common_kwargs = dict(
             tf_dict=target["tf_dict"],
             exec_tf=exec_tf,
             htf=htf,
@@ -682,6 +787,51 @@ def _run_batch_optimization(
             data_period_end=target.get("period_end", ""),
         )
 
+        if validation_mode == "oos_3split":
+            validated = _execute_validated_optimization(
+                **common_kwargs,
+                oos_train_pct=oos_train_pct,
+                oos_val_pct=oos_val_pct,
+                oos_top_n=oos_top_n,
+                oos_min_trades=oos_min_trades,
+            )
+            result_set = validated.train_results
+            # シンボル情報の付与（_execute_validated_optimizationでは付与済みだがtrain_resultsに転写）
+            tf_dict = target["tf_dict"]
+            if exec_tf in tf_dict:
+                result_set.symbol = tf_dict[exec_tf].symbol
+            result_set.execution_tf = exec_tf
+            result_set.data_source = target["source"]
+            result_set.data_period_start = target.get("period_start", "")
+            result_set.data_period_end = target.get("period_end", "")
+            batch_validated[result_set.symbol] = validated
+
+        elif validation_mode == "wfa":
+            wfa_result = _execute_wfa_optimization(
+                **common_kwargs,
+                wfa_n_folds=wfa_n_folds,
+                wfa_min_is_pct=wfa_min_is_pct,
+                wfa_use_val=wfa_use_val,
+                wfa_val_pct=wfa_val_pct,
+                wfa_top_n=wfa_top_n,
+                wfa_min_trades=wfa_min_trades,
+            )
+            result_set = wfa_result.final_train_results
+            if result_set is None:
+                from optimizer.results import OptimizationResultSet
+                result_set = OptimizationResultSet(entries=[])
+            tf_dict = target["tf_dict"]
+            if exec_tf in tf_dict:
+                result_set.symbol = tf_dict[exec_tf].symbol
+            result_set.execution_tf = exec_tf
+            result_set.data_source = target["source"]
+            result_set.data_period_start = target.get("period_start", "")
+            result_set.data_period_end = target.get("period_end", "")
+            batch_wfa[result_set.symbol] = wfa_result
+
+        else:
+            result_set = _execute_single_optimization(**common_kwargs)
+
         _save_results(result_set)
         all_results.append(result_set)
 
@@ -692,10 +842,12 @@ def _run_batch_optimization(
     overall_progress.progress(1.0, text=f"✅ 全{n_total}件完了 [{batch_elapsed:.1f}s]")
     status_text.empty()
 
-    st.success(f"バッチ完了: {n_total}件 / {batch_elapsed:.1f}s")
+    st.success(f"バッチ完了: {n_total}件 / {batch_elapsed:.1f}s ({mode_label})")
 
     # 比較ビューへ遷移
     st.session_state.comparison_results = all_results
+    st.session_state.batch_validated = batch_validated if batch_validated else None
+    st.session_state.batch_wfa = batch_wfa if batch_wfa else None
     st.session_state.optimizer_view = "compare"
     st.rerun()
 
@@ -756,13 +908,13 @@ def _save_results(result_set):
         "data_source": result_set.data_source,
         "total_combinations": result_set.total_combinations,
         "timestamp": ts,
-        "results": json_rows,
     }
-    if result_set.data_source == "trimmed":
+    if result_set.data_period_start:
         json_meta["data_period"] = {
             "start": result_set.data_period_start,
             "end": result_set.data_period_end,
         }
+    json_meta["results"] = json_rows
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(json_meta, f, ensure_ascii=False, indent=2)
 
@@ -936,17 +1088,124 @@ def _execute_validated_optimization(
     return validated
 
 
+def _execute_wfa_optimization(
+    tf_dict, exec_tf, htf, trend_method, target_regimes,
+    selected_templates, custom_ranges, scoring_weights,
+    initial_capital, commission, slippage,
+    ma_fast, ma_slow, adx_period, adx_trend_th, adx_range_th,
+    n_workers=1, progress_callback=None,
+    data_source="original", data_period_start="", data_period_end="",
+    wfa_n_folds=5, wfa_min_is_pct=40, wfa_use_val=True,
+    wfa_val_pct=20, wfa_top_n=10, wfa_min_trades=30,
+):
+    """Walk-Forward Analysis 付き最適化"""
+    from optimizer.walk_forward import WFAConfig, run_walk_forward_analysis
+
+    exec_ohlcv = tf_dict[exec_tf]
+    exec_df = exec_ohlcv.df.copy()
+
+    # トレンドラベル付与（全データに対して）
+    if htf and htf in tf_dict:
+        htf_ohlcv = tf_dict[htf]
+        htf_df = htf_ohlcv.df.copy()
+
+        detector = TrendDetector()
+
+        if trend_method == "ma_cross":
+            htf_df = detector.detect_ma_cross(
+                htf_df, fast_period=ma_fast, slow_period=ma_slow
+            )
+        elif trend_method == "adx":
+            htf_df = detector.detect_adx(
+                htf_df, adx_period=adx_period,
+                trend_threshold=adx_trend_th,
+                range_threshold=adx_range_th,
+            )
+        else:  # combined
+            htf_df = detector.detect_combined(
+                htf_df, ma_fast=ma_fast, ma_slow=ma_slow,
+                adx_period=adx_period,
+                adx_trend_threshold=adx_trend_th,
+                adx_range_threshold=adx_range_th,
+            )
+
+        exec_df = TrendDetector.label_execution_tf(exec_df, htf_df)
+    else:
+        exec_df["trend_regime"] = TrendRegime.RANGE.value
+
+    # config生成
+    all_configs = []
+    for tname in selected_templates:
+        template = BUILTIN_TEMPLATES[tname]
+        tpl_ranges = custom_ranges.get(tname, {})
+        configs = template.generate_configs(tpl_ranges)
+        all_configs.extend(configs)
+
+    # オプティマイザ
+    optimizer = GridSearchOptimizer(
+        initial_capital=initial_capital,
+        commission_pct=commission,
+        slippage_pct=slippage,
+        scoring_weights=scoring_weights,
+    )
+
+    # WFA設定
+    wfa_config = WFAConfig(
+        n_folds=wfa_n_folds,
+        min_is_pct=wfa_min_is_pct / 100.0,
+        use_validation=wfa_use_val,
+        val_pct_within_is=wfa_val_pct / 100.0,
+        top_n_for_val=wfa_top_n,
+        min_trades_for_val=wfa_min_trades,
+    )
+
+    # WFA実行
+    wfa_result = run_walk_forward_analysis(
+        df=exec_df,
+        all_configs=all_configs,
+        target_regimes=target_regimes,
+        wfa_config=wfa_config,
+        optimizer=optimizer,
+        progress_callback=progress_callback,
+        n_workers=n_workers,
+    )
+
+    # メタ情報
+    wfa_result.symbol = exec_ohlcv.symbol
+    wfa_result.execution_tf = exec_tf
+
+    # final_train_results にもメタ情報を付与
+    if wfa_result.final_train_results:
+        wfa_result.final_train_results.symbol = exec_ohlcv.symbol
+        wfa_result.final_train_results.execution_tf = exec_tf
+        wfa_result.final_train_results.htf = htf or ""
+        wfa_result.final_train_results.data_source = data_source
+        wfa_result.final_train_results.data_period_start = data_period_start
+        wfa_result.final_train_results.data_period_end = data_period_end
+
+        for entry in wfa_result.final_train_results.entries:
+            entry.warnings = detect_overfitting_warnings(entry.metrics)
+
+    return wfa_result
+
+
 def _run_optimization(
     exec_tf, htf, trend_method, target_regimes,
     selected_templates, custom_ranges, scoring_weights,
     initial_capital, commission, slippage,
     ma_fast, ma_slow, adx_period, adx_trend_th, adx_range_th,
     n_workers=1,
-    oos_enabled=False,
+    validation_mode="off",
     oos_train_pct=60,
     oos_val_pct=20,
     oos_top_n=10,
     oos_min_trades=30,
+    wfa_n_folds=5,
+    wfa_min_is_pct=40,
+    wfa_use_val=True,
+    wfa_val_pct=20,
+    wfa_top_n=10,
+    wfa_min_trades=30,
 ):
     """単一銘柄の最適化実行（UIラッパー）"""
     progress_bar = st.progress(0, text="Starting optimization...")
@@ -963,7 +1222,7 @@ def _run_optimization(
 
     ds_info = st.session_state.get("opt_data_source_info", {})
 
-    if oos_enabled:
+    if validation_mode == "oos_3split":
         # OOS 検証付き最適化
         validated_result = _execute_validated_optimization(
             tf_dict=st.session_state.ohlcv_dict,
@@ -996,8 +1255,52 @@ def _run_optimization(
         result_set = validated_result.train_results
         st.session_state.optimization_result = result_set
         st.session_state.validated_result = validated_result
+        st.session_state.wfa_result = None
+
+    elif validation_mode == "wfa":
+        # Walk-Forward Analysis
+        wfa_result = _execute_wfa_optimization(
+            tf_dict=st.session_state.ohlcv_dict,
+            exec_tf=exec_tf,
+            htf=htf,
+            trend_method=trend_method,
+            target_regimes=target_regimes,
+            selected_templates=selected_templates,
+            custom_ranges=custom_ranges,
+            scoring_weights=scoring_weights,
+            initial_capital=initial_capital,
+            commission=commission,
+            slippage=slippage,
+            ma_fast=ma_fast,
+            ma_slow=ma_slow,
+            adx_period=adx_period,
+            adx_trend_th=adx_trend_th,
+            adx_range_th=adx_range_th,
+            n_workers=n_workers,
+            progress_callback=on_progress,
+            data_source=ds_info.get("source", "original"),
+            data_period_start=ds_info.get("period_start", ""),
+            data_period_end=ds_info.get("period_end", ""),
+            wfa_n_folds=wfa_n_folds,
+            wfa_min_is_pct=wfa_min_is_pct,
+            wfa_use_val=wfa_use_val,
+            wfa_val_pct=wfa_val_pct,
+            wfa_top_n=wfa_top_n,
+            wfa_min_trades=wfa_min_trades,
+        )
+
+        # final_train_results をメインの結果として使う
+        result_set = wfa_result.final_train_results
+        if result_set is None:
+            from optimizer.results import OptimizationResultSet
+            result_set = OptimizationResultSet(entries=[])
+
+        st.session_state.optimization_result = result_set
+        st.session_state.wfa_result = wfa_result
+        st.session_state.validated_result = None
+
     else:
-        # 従来の最適化（OOS なし）
+        # 従来の最適化（検証なし）
         result_set = _execute_single_optimization(
             tf_dict=st.session_state.ohlcv_dict,
             exec_tf=exec_tf,
@@ -1028,6 +1331,7 @@ def _run_optimization(
 
         st.session_state.optimization_result = result_set
         st.session_state.validated_result = None
+        st.session_state.wfa_result = None
 
     elapsed = time.time() - start_time
 
@@ -1050,42 +1354,46 @@ def _render_regime_switching_section(result_set, viable_strategies):
     """レジーム切替バックテスト（通しテスト）セクション"""
     section_header("🔄", "レジーム切替テスト", "採用戦略を全期間で統合検証")
 
-    st.caption(
-        f"**{len(viable_strategies)}** レジームの採用戦略を使い、"
-        f"レジームに応じて戦略を自動切替する統合バックテスト"
-    )
+    st.caption("チェックしたレジームの戦略でレジーム切替バックテストを実行")
 
-    # 採用戦略サマリー
-    cols = st.columns(len(viable_strategies))
+    # レジーム選択チェックボックス
+    regime_cols = st.columns(len(viable_strategies))
+    selected_regimes = {}
     for i, (regime, entry) in enumerate(viable_strategies.items()):
-        with cols[i]:
+        with regime_cols[i]:
             icon = REGIME_ICONS.get(regime, "")
             label = REGIME_OPTIONS.get(regime, regime)
             side_label = entry.config.get("side", "?")
             pnl = entry.metrics.total_profit_pct
-            st.markdown(
-                f"**{icon} {label}**: {entry.template_name} "
-                f"({side_label}) / {pnl:+.1f}%"
+            checked = st.checkbox(
+                f"{icon} {label}: {entry.template_name} ({side_label}) / {pnl:+.1f}%",
+                value=True,
+                key=f"rs_regime_{regime}",
             )
+            if checked:
+                selected_regimes[regime] = entry
 
-    # データソース選択
+    # データソース選択（デフォルト: 全期間データ）
     data_option = st.radio(
         "テストデータ",
-        ["same", "original"],
-        format_func=lambda x: "最適化と同じデータ" if x == "same" else "全期間データ（original）",
+        ["original", "same"],
+        format_func=lambda x: "全期間データ（original）" if x == "original" else "最適化と同じデータ",
         horizontal=True,
         key="rs_data_option",
     )
 
     if st.button("🔄 通しテスト実行", type="primary", use_container_width=True):
-        _run_regime_switching_test(
-            result_set, viable_strategies, use_original=(data_option == "original"),
-        )
+        if not selected_regimes:
+            st.warning("少なくとも1つのレジームを選択してください")
+        else:
+            _run_regime_switching_test(
+                result_set, selected_regimes, use_original=(data_option == "original"),
+            )
 
     # 結果表示
     rs_result = st.session_state.get("regime_switching_result")
     if rs_result is not None:
-        _render_regime_switching_results(rs_result, viable_strategies)
+        _render_regime_switching_results(rs_result, selected_regimes)
 
 
 def _run_regime_switching_test(result_set, viable_strategies, use_original=False):
@@ -1237,14 +1545,24 @@ def _render_regime_switching_results(rs_result, viable_strategies):
         st.plotly_chart(fig, use_container_width=True, key="rs_equity_chart")
 
 
-def _render_regime_best_summary(result_set):
-    """レジーム別ベスト戦略サマリーを描画。採用可能な戦略のdictを返す。"""
+def _render_regime_best_summary(result_set, oos_passed=None):
+    """レジーム別ベスト戦略サマリーを描画。採用可能な戦略のdictを返す。
+
+    Args:
+        result_set: 最適化結果セット
+        oos_passed: OOS検証でPASSしたレジーム→テストエントリーのdict。
+                    指定時はPASSレジームのみ表示。
+    """
     section_header("🏆", "Best per Regime", "レジーム別トップ戦略")
 
-    regimes_in_results = sorted(set(e.trend_regime for e in result_set.entries))
+    if oos_passed is not None:
+        # OOS有効: PASSしたレジームのみ表示
+        regimes_in_results = sorted(oos_passed.keys())
+    else:
+        regimes_in_results = sorted(set(e.trend_regime for e in result_set.entries))
 
     if not regimes_in_results:
-        st.info("結果がありません")
+        st.info("OOS検証をPASSしたレジームがありません" if oos_passed is not None else "結果がありません")
         return {}
 
     viable = {}
@@ -1252,8 +1570,13 @@ def _render_regime_best_summary(result_set):
 
     for i, regime in enumerate(regimes_in_results):
         with cols[i]:
-            regime_set = result_set.filter_regime(regime)
-            best = regime_set.best_by_pnl
+            if oos_passed is not None:
+                # OOS PASS: Test期間のエントリーを使用
+                best = oos_passed[regime]
+            else:
+                regime_set = result_set.filter_regime(regime)
+                best = regime_set.best_by_pnl
+
             if not best:
                 st.caption(f"{REGIME_ICONS.get(regime, '')} {REGIME_OPTIONS.get(regime, regime)}: データなし")
                 continue
@@ -1266,8 +1589,12 @@ def _render_regime_best_summary(result_set):
             dd = best.metrics.max_drawdown_pct
             score = best.composite_score
 
-            # 採用基準: PF > 1.0 かつ P/L > 0 かつ trades >= 5
-            is_viable = pf > 1.0 and pnl > 0 and trades >= 5
+            # OOS PASSの場合は既にフィルタ済みなので常にviable
+            if oos_passed is not None:
+                is_viable = True
+            else:
+                # 採用基準: PF > 1.0 かつ P/L > 0 かつ trades >= 5
+                is_viable = pf > 1.0 and pnl > 0 and trades >= 5
 
             if is_viable:
                 viable[regime] = best
@@ -1334,6 +1661,7 @@ def _render_regime_best_summary(result_set):
 def _generate_results_markdown(
     result_set,
     validated=None,
+    wfa_result=None,
 ) -> str:
     """結果をMarkdownテキストとして生成"""
     from datetime import datetime
@@ -1357,14 +1685,6 @@ def _generate_results_markdown(
             f"Test[{validated.val_end}:{validated.total_bars}]"
         )
 
-        # フィルタ統計
-        for regime, stats in validated.filter_stats.items():
-            lines.append(
-                f"- {regime}: Train {stats.get('total', 0)}件中 "
-                f"min_trades通過 {stats.get('passed', 0)}件 → "
-                f"Val候補 {stats.get('used', 0)}件"
-            )
-
         # 判定
         for regime in validated.val_best.keys():
             test_entry = validated.test_results.get(regime)
@@ -1386,9 +1706,9 @@ def _generate_results_markdown(
             for w in validated.overfitting_warnings:
                 lines.append(f"- {w}")
 
-        # 比較テーブル
+        # 比較テーブル（PASSのみ）
         lines.append(f"")
-        lines.append(f"### Val-best Train/Val/Test 比較")
+        lines.append(f"### PASS戦略 Train/Val/Test 比較")
         lines.append(f"")
         lines.append(f"| レジーム | 戦略 | Train PnL | Train Trades | Val PnL | Test PnL | 劣化 |")
         lines.append(f"|---------|------|-----------|-------------|---------|---------|------|")
@@ -1397,6 +1717,12 @@ def _generate_results_markdown(
             val_entry = validated.val_best.get(regime)
             test_entry = validated.test_results.get(regime)
             if not val_entry:
+                continue
+
+            # PASSしたレジームのみ
+            _has_w = any(f"[{regime}]" in w for w in validated.overfitting_warnings)
+            _test_pos = test_entry and test_entry.metrics.total_profit_pct > 0
+            if not (_test_pos and not _has_w):
                 continue
 
             train_entry = None
@@ -1416,10 +1742,62 @@ def _generate_results_markdown(
                     (train_entry.metrics.total_profit_pct - test_entry.metrics.total_profit_pct)
                     / abs(train_entry.metrics.total_profit_pct) * 100
                 )
-                decay_str = f"{decay:.0f}%"
+                decay_str = _format_decay(decay)
 
             strategy = f"{val_entry.template_name} ({val_entry.param_str})"
             lines.append(f"| {regime} | {strategy} | {t_pnl} | {t_trades} | {v_pnl} | {te_pnl} | {decay_str} |")
+
+    # WFA セクション
+    if wfa_result is not None:
+        lines.append(f"")
+        lines.append(f"## Walk-Forward Analysis")
+        lines.append(f"")
+        lines.append(f"- フォールド数: {len(wfa_result.folds)}")
+        lines.append(f"- データ本数: {wfa_result.total_bars}")
+        lines.append(f"")
+
+        for regime in wfa_result.wfe.keys():
+            cr = wfa_result.consistency_ratio.get(regime, 0)
+            wfe = wfa_result.wfe.get(regime, 0)
+            stitched = wfa_result.stitched_oos_pnl.get(regime, 0)
+            stability = wfa_result.strategy_stability.get(regime, 0)
+
+            if cr >= 0.6 and wfe > 0.3:
+                verdict = "PASS"
+            elif cr >= 0.4:
+                verdict = "CAUTION"
+            else:
+                verdict = "FAIL"
+
+            lines.append(f"### {regime}: {verdict}")
+            lines.append(f"")
+            lines.append(f"| 指標 | 値 |")
+            lines.append(f"|------|-----|")
+            lines.append(f"| WFE | {wfe:.3f} |")
+            lines.append(f"| Consistency Ratio | {cr:.0%} |")
+            lines.append(f"| Stitched OOS PnL | {stitched:+.2f}% |")
+            lines.append(f"| Strategy Stability | {stability:.0%} |")
+            lines.append(f"")
+
+        # フォールド別テーブル
+        lines.append(f"### フォールド別詳細")
+        lines.append(f"")
+        lines.append(f"| Fold | IS区間 | OOS区間 | 戦略 | IS PnL | OOS PnL |")
+        lines.append(f"|------|--------|---------|------|--------|---------|")
+
+        for fold in wfa_result.folds:
+            for regime in wfa_result.wfe.keys():
+                selected = fold.selected_strategy.get(regime)
+                oos_entry = fold.oos_results.get(regime)
+                strategy = f"{selected.template_name}" if selected else "-"
+                is_pnl = f"{selected.metrics.total_profit_pct:+.2f}%" if selected else "-"
+                oos_pnl = f"{oos_entry.metrics.total_profit_pct:+.2f}%" if oos_entry else "-"
+                lines.append(
+                    f"| {fold.fold_index + 1} ({regime}) "
+                    f"| [{fold.is_range[0]}:{fold.is_range[1]}] "
+                    f"| [{fold.oos_range[0]}:{fold.oos_range[1]}] "
+                    f"| {strategy} | {is_pnl} | {oos_pnl} |"
+                )
 
     # ランキング上位20
     lines.append(f"")
@@ -1441,6 +1819,50 @@ def _generate_results_markdown(
 
     lines.append(f"")
     return "\n".join(lines)
+
+
+def _render_md_copy_button(md_text: str, button_id: str = "cpbtn"):
+    """Markdownテキストをクリップボードにコピーするボタンを描画"""
+    _b64 = base64.b64encode(md_text.encode("utf-8")).decode("ascii")
+    _copy_html = f"""<script>
+function _copyMd_{button_id}() {{
+    var bytes = Uint8Array.from(atob('{_b64}'), function(c) {{ return c.charCodeAt(0); }});
+    var text = new TextDecoder('utf-8').decode(bytes);
+    navigator.clipboard.writeText(text).then(function() {{
+        document.getElementById('{button_id}').innerText = 'Copied!';
+        setTimeout(function() {{ document.getElementById('{button_id}').innerText = 'Markdown'; }}, 2000);
+    }}).catch(function() {{
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        document.getElementById('{button_id}').innerText = 'Copied!';
+        setTimeout(function() {{ document.getElementById('{button_id}').innerText = 'Markdown'; }}, 2000);
+    }});
+}}
+</script>
+<button id="{button_id}" onclick="_copyMd_{button_id}()" style="
+    background-color:transparent;border:1px solid rgba(250,250,250,0.2);
+    color:rgba(250,250,250,0.85);padding:0.4rem 0.75rem;border-radius:0.5rem;
+    cursor:pointer;font-size:14px;width:100%;
+">Markdown</button>"""
+    st.components.v1.html(_copy_html, height=42)
+
+
+def _format_decay(decay: float) -> str:
+    """劣化率を判定ラベル付きでフォーマット"""
+    if decay <= 0:
+        return f"改善 {abs(decay):.0f}%"
+    elif decay <= 30:
+        return f"{decay:.0f}% (良好)"
+    elif decay <= 50:
+        return f"{decay:.0f}% (許容)"
+    else:
+        return f"{decay:.0f}% (危険)"
 
 
 def _render_oos_section(validated: ValidatedResultSet):
@@ -1474,39 +1896,24 @@ def _render_oos_section(validated: ValidatedResultSet):
         else:
             st.error(f"**{regime_label}: FAIL** — Test期間でマイナス（実運用非推奨）")
 
-    # ========== フィルタ統計サマリー ==========
-    for regime, stats in validated.filter_stats.items():
-        total = stats.get("total", 0)
-        passed = stats.get("passed", 0)
-        used = stats.get("used", 0)
-
-        val_results = validated.val_all_results.get(regime)
-        val_positive = 0
-        if val_results:
-            val_positive = sum(
-                1 for e in val_results.entries
-                if e.metrics.total_profit_pct > 0
-            )
-
-        regime_label = f"{REGIME_ICONS.get(regime, '')} {regime}"
-        st.caption(
-            f"{regime_label}: "
-            f"Train {total}件中 min_trades通過 {passed}件 → "
-            f"Val候補 {used}件 → Val PnLプラス {val_positive}/{used}件"
-        )
-
     # ========== 警告表示 ==========
     if validated.overfitting_warnings:
         for w in validated.overfitting_warnings:
             st.warning(f"{w}")
 
-    # ========== Val-best の Train vs Val vs Test 比較テーブル ==========
+    # ========== Val-best の Train vs Val vs Test 比較テーブル（PASSのみ） ==========
     comparison_rows = []
     for regime in validated.val_best.keys():
         val_entry = validated.val_best.get(regime)
         test_entry = validated.test_results.get(regime)
 
         if not val_entry:
+            continue
+
+        # PASSしたレジームのみ表示
+        has_warnings = any(f"[{regime}]" in w for w in validated.overfitting_warnings)
+        test_positive = test_entry and test_entry.metrics.total_profit_pct > 0
+        if not (test_positive and not has_warnings):
             continue
 
         # Val-best に対応する Train エントリーを探す
@@ -1542,12 +1949,7 @@ def _render_oos_section(validated: ValidatedResultSet):
                     (train_entry.metrics.total_profit_pct - test_entry.metrics.total_profit_pct)
                     / abs(train_entry.metrics.total_profit_pct) * 100
                 )
-                if decay > 50:
-                    row["劣化"] = f"{decay:.0f}%"
-                elif decay > 0:
-                    row["劣化"] = f"{decay:.0f}%"
-                else:
-                    row["劣化"] = f"改善 {abs(decay):.0f}%"
+                row["劣化"] = _format_decay(decay)
             else:
                 row["劣化"] = "-"
         else:
@@ -1564,47 +1966,120 @@ def _render_oos_section(validated: ValidatedResultSet):
             hide_index=True,
         )
 
-        # ========== Val 全候補テーブル（展開式） ==========
-        with st.expander("Val候補の詳細を表示"):
-            for regime in validated.val_all_results.keys():
-                val_results = validated.val_all_results[regime]
-                if not val_results.entries:
-                    continue
+    else:
+        st.info("OOS検証結果がありません（Train期間でトレードが発生しなかった可能性）")
 
-                val_rows = []
-                for e in val_results.ranked():
-                    # 対応する Train エントリーを探す
-                    t_entry = None
-                    for te in validated.train_results.filter_regime(regime).entries:
-                        if te.template_name == e.template_name and te.params == e.params:
-                            t_entry = te
-                            break
 
-                    is_best = (
-                        validated.val_best.get(regime)
-                        and e.template_name == validated.val_best[regime].template_name
-                        and e.params == validated.val_best[regime].params
-                    )
+def _render_wfa_section(wfa_result):
+    """Walk-Forward Analysis 結果セクション"""
+    from optimizer.walk_forward import WFAResultSet
 
-                    val_rows.append({
-                        "": ">> " if is_best else "",
-                        "戦略": f"{e.template_name} ({e.param_str})",
-                        "Train PnL": f"{t_entry.metrics.total_profit_pct:+.2f}%" if t_entry else "-",
-                        "Train Trades": t_entry.metrics.total_trades if t_entry else "-",
-                        "Val PnL": f"{e.metrics.total_profit_pct:+.2f}%",
-                        "Val Sharpe": f"{e.metrics.sharpe_ratio:.2f}",
-                        "Val Trades": e.metrics.total_trades,
-                    })
+    n_folds = len(wfa_result.folds)
+    section_header(
+        "🔄", "Walk-Forward Analysis",
+        f"{n_folds}フォールド | Anchored WFA | {wfa_result.total_bars}本"
+    )
 
-                regime_label = f"{REGIME_ICONS.get(regime, '')} {regime}"
-                st.caption(f"**{regime_label}** Val候補 ({len(val_rows)}件)")
+    # ========== レジーム別 PASS/CAUTION/FAIL バナー ==========
+    for regime in wfa_result.wfe.keys():
+        cr = wfa_result.consistency_ratio.get(regime, 0)
+        wfe = wfa_result.wfe.get(regime, 0)
+        stitched = wfa_result.stitched_oos_pnl.get(regime, 0)
+
+        regime_label = f"{REGIME_ICONS.get(regime, '')} {regime}"
+
+        if cr >= 0.6 and wfe > 0.3:
+            st.success(
+                f"**{regime_label}: PASS** — "
+                f"CR={cr:.0%}, WFE={wfe:.2f}, OOS合計={stitched:+.2f}%"
+            )
+        elif cr >= 0.4:
+            st.warning(
+                f"**{regime_label}: CAUTION** — "
+                f"CR={cr:.0%}, WFE={wfe:.2f}, OOS合計={stitched:+.2f}%"
+            )
+        else:
+            st.error(
+                f"**{regime_label}: FAIL** — "
+                f"CR={cr:.0%}, WFE={wfe:.2f}, OOS合計={stitched:+.2f}%"
+            )
+
+    # ========== 集約メトリクスカード ==========
+    regimes = list(wfa_result.wfe.keys())
+    if regimes:
+        st.markdown("#### 集約メトリクス")
+        for regime in regimes:
+            regime_label = f"{REGIME_ICONS.get(regime, '')} {regime}"
+            cr = wfa_result.consistency_ratio.get(regime, 0)
+            wfe = wfa_result.wfe.get(regime, 0)
+            stitched = wfa_result.stitched_oos_pnl.get(regime, 0)
+            stability = wfa_result.strategy_stability.get(regime, 0)
+
+            st.caption(f"**{regime_label}**")
+            mc1, mc2, mc3, mc4 = st.columns(4)
+            mc1.metric(
+                "WFE",
+                f"{wfe:.3f}",
+                help="Walk-Forward Efficiency: mean(OOS PnL)/mean(IS PnL)。0.3以上が目安",
+            )
+            mc2.metric(
+                "Consistency Ratio",
+                f"{cr:.0%}",
+                help="OOS期間でプラスだったフォールドの割合。60%以上が目安",
+            )
+            mc3.metric(
+                "Stitched OOS PnL",
+                f"{stitched:+.2f}%",
+                help="全フォールドのOOS PnLを合算した値",
+            )
+            mc4.metric(
+                "Strategy Stability",
+                f"{stability:.0%}",
+                help="各フォールドで同一戦略が選ばれた割合。高いほど安定",
+            )
+
+    # ========== フォールド別詳細テーブル（展開式） ==========
+    with st.expander("フォールド別詳細を表示"):
+        for regime in regimes:
+            regime_label = f"{REGIME_ICONS.get(regime, '')} {regime}"
+            st.caption(f"**{regime_label}**")
+
+            fold_rows = []
+            for fold in wfa_result.folds:
+                is_range = fold.is_range
+                oos_range = fold.oos_range
+                selected = fold.selected_strategy.get(regime)
+                oos_entry = fold.oos_results.get(regime)
+
+                row = {
+                    "Fold": fold.fold_index + 1,
+                    "IS区間": f"[{is_range[0]}:{is_range[1]}]",
+                    "OOS区間": f"[{oos_range[0]}:{oos_range[1]}]",
+                    "選択戦略": (
+                        f"{selected.template_name} ({selected.param_str})"
+                        if selected else "-"
+                    ),
+                    "IS PnL": (
+                        f"{selected.metrics.total_profit_pct:+.2f}%"
+                        if selected else "-"
+                    ),
+                    "OOS PnL": (
+                        f"{oos_entry.metrics.total_profit_pct:+.2f}%"
+                        if oos_entry else "-"
+                    ),
+                    "OOS Trades": (
+                        oos_entry.metrics.total_trades
+                        if oos_entry else 0
+                    ),
+                }
+                fold_rows.append(row)
+
+            if fold_rows:
                 st.dataframe(
-                    pd.DataFrame(val_rows),
+                    pd.DataFrame(fold_rows),
                     use_container_width=True,
                     hide_index=True,
                 )
-    else:
-        st.info("OOS検証結果がありません（Train期間でトレードが発生しなかった可能性）")
 
 
 def _render_results_view():
@@ -1632,25 +2107,40 @@ def _render_results_view():
         )
     with hcol2:
         validated = st.session_state.get("validated_result")
-        md_text = _generate_results_markdown(result_set, validated)
-        st.download_button(
-            label="Markdown",
-            data=md_text,
-            file_name=f"{result_set.symbol}_{result_set.execution_tf}_results.md",
-            mime="text/markdown",
-            key="export_md",
-        )
+        wfa_result = st.session_state.get("wfa_result")
+        md_text = _generate_results_markdown(result_set, validated, wfa_result)
+        _render_md_copy_button(md_text, button_id="cpbtn_single")
+
+    # --- WFA 結果 ---
+    wfa_result = st.session_state.get("wfa_result")
+    if wfa_result is not None:
+        _render_wfa_section(wfa_result)
+        st.divider()
 
     # --- OOS 検証結果 ---
+    validated = st.session_state.get("validated_result")
     if validated is not None:
         _render_oos_section(validated)
         st.divider()
 
     # --- レジーム別ベスト戦略サマリー ---
-    viable_strategies = _render_regime_best_summary(result_set)
+    # OOS有効時: PASSしたレジームのみ表示
+    oos_passed = None
+    if validated is not None:
+        oos_passed = {}
+        for regime in validated.val_best.keys():
+            test_entry = validated.test_results.get(regime)
+            has_warnings = any(f"[{regime}]" in w for w in validated.overfitting_warnings)
+            test_positive = test_entry and test_entry.metrics.total_profit_pct > 0
+            if test_positive and not has_warnings:
+                oos_passed[regime] = test_entry
+        if not oos_passed:
+            oos_passed = None  # 全FAIL時はNoneにしてメッセージ表示
+
+    viable_strategies = _render_regime_best_summary(result_set, oos_passed=oos_passed)
 
     # --- レジーム切替通しテスト ---
-    if len(viable_strategies) >= 2:
+    if len(viable_strategies) >= 1:
         _render_regime_switching_section(result_set, viable_strategies)
 
     st.divider()
@@ -1945,6 +2435,7 @@ def _parse_result_filename(stem: str) -> dict:
         return {
             "symbol": "?", "exec_tf": "?", "htf": "?",
             "is_trimmed": False, "trim_label": "", "date_label": stem,
+            "date_str": "", "year": "?",
         }
 
     symbol, exec_tf, htf, trim_raw, date_str, time_str = m.groups()
@@ -1968,7 +2459,46 @@ def _parse_result_filename(stem: str) -> dict:
         "is_trimmed": trim_raw is not None,
         "trim_label": trim_label,
         "date_label": date_label,
+        "date_str": date_str,
+        "year": date_str[:4],
     }
+
+
+def _read_data_period_from_json(path) -> tuple:
+    """JSONファイルからdata_periodのstart/end年を高速読み取り。
+
+    新形式: data_periodはresultsの前に配置 → 先頭2KBで見つかる
+    旧形式: data_periodはresultsの後（末尾） → 末尾500Bで見つかる
+
+    Returns:
+        (start_year, end_year) e.g. ("2025", "2026") or ("", "")
+    """
+    import re
+    import os
+    pattern = r'"data_period"\s*:\s*\{\s*"start"\s*:\s*"(\d{4})-'
+    pattern_end = r'"data_period"\s*:\s*\{[^}]*"end"\s*:\s*"(\d{4})-'
+    try:
+        file_size = os.path.getsize(path)
+        with open(path, "r", encoding="utf-8") as f:
+            # 先頭2KBを読む（新形式: data_periodがresultsの前）
+            head = f.read(2048)
+            m = re.search(pattern, head)
+            if not m and file_size > 2048:
+                # 末尾500Bを読む（旧形式: data_periodがresultsの後）
+                f.seek(max(0, file_size - 500))
+                tail = f.read()
+                m = re.search(pattern, tail)
+                if m:
+                    m2 = re.search(pattern_end, tail)
+                    end_year = m2.group(1) if m2 else m.group(1)
+                    return m.group(1), end_year
+            elif m:
+                m2 = re.search(pattern_end, head)
+                end_year = m2.group(1) if m2 else m.group(1)
+                return m.group(1), end_year
+    except Exception:
+        pass
+    return "", ""
 
 
 def _render_load_view():
@@ -1994,21 +2524,33 @@ def _render_load_view():
         st.info("保存済みの結果ファイルがありません。")
         return
 
-    # 全ファイルのメタ情報をファイル名からパース
+    # 全ファイルのメタ情報をファイル名からパース + JSONからdata_period読取
     file_meta = {}
     for fp in json_files:
         parsed = _parse_result_filename(fp.stem)
+        # JSONからデータ期間の年を取得（ファイル名の実行日ではなく）
+        dp_start, dp_end = _read_data_period_from_json(fp)
+        if dp_start:
+            # データ期間が跨る年を全て含める（例: 2025-02 ~ 2026-01 → "2025"）
+            parsed["data_year"] = dp_start
+        else:
+            # data_period未保存のファイル → 実行年にフォールバック
+            parsed["data_year"] = parsed["year"]
         file_meta[fp.stem] = {**parsed, "path": fp}
 
     all_symbols = sorted(set(m["symbol"] for m in file_meta.values()))
     all_exec_tfs = sorted(set(m["exec_tf"] for m in file_meta.values()))
+    all_years = sorted(
+        set(m["data_year"] for m in file_meta.values() if m["data_year"] != "?"),
+        reverse=True,
+    )
 
     # === 2カラムレイアウト: 左=選択 / 右=プレビュー ===
     left_col, right_col = st.columns([2, 3])
 
     with left_col:
         # --- フィルター ---
-        fc1, fc2 = st.columns(2)
+        fc1, fc2, fc3 = st.columns(3)
         with fc1:
             symbol_filter = st.selectbox(
                 "銘柄",
@@ -2020,6 +2562,12 @@ def _render_load_view():
                 "実行TF",
                 options=["すべて"] + all_exec_tfs,
                 key="load_tf_filter",
+            )
+        with fc3:
+            year_filter = st.selectbox(
+                "年度",
+                options=["すべて"] + all_years,
+                key="load_year_filter",
             )
 
         source_options = ["すべて", "📦 オリジナル", "✂️ 切り出し"]
@@ -2037,6 +2585,8 @@ def _render_load_view():
             if symbol_filter != "すべて" and meta["symbol"] != symbol_filter:
                 continue
             if tf_filter != "すべて" and meta["exec_tf"] != tf_filter:
+                continue
+            if year_filter != "すべて" and meta["data_year"] != year_filter:
                 continue
             if source_filter == "📦 オリジナル" and meta["is_trimmed"]:
                 continue
@@ -2316,6 +2866,236 @@ def _render_compare_card(symbol, entry):
     """, unsafe_allow_html=True)
 
 
+def _compare_md_header(comparison_results):
+    """比較Markdown共通ヘッダー"""
+    symbols = [rs.symbol for rs in comparison_results]
+    return f"# 比較レポート ({len(symbols)}銘柄)\n\n比較対象: {' / '.join(symbols)}\n"
+
+
+def _compare_all_regimes(comparison_results):
+    """比較結果から全レジームを取得"""
+    return sorted(set(
+        e.trend_regime
+        for rs in comparison_results
+        for e in rs.entries
+    ))
+
+
+def _generate_meta_markdown(comparison_results):
+    """メタ分析タブ用Markdown"""
+    from collections import Counter as MdCounter
+    lines = [_compare_md_header(comparison_results)]
+    all_regimes = _compare_all_regimes(comparison_results)
+
+    # テンプレート採択分布
+    lines.append(f"## テンプレート採択分布")
+    for regime in all_regimes:
+        regime_label = REGIME_OPTIONS.get(regime, regime)
+        bests = {}
+        for rs in comparison_results:
+            regime_set = rs.filter_regime(regime)
+            best = regime_set.best_by_pnl
+            if best:
+                bests[rs.symbol] = best.template_name
+        if not bests:
+            continue
+        counter = MdCounter(bests.values())
+        most_common, count = counter.most_common(1)[0]
+        pct = count / len(bests) * 100
+        lines.append(f"")
+        lines.append(f"### {regime_label}")
+        lines.append(f"- 最頻テンプレート: **{most_common}** ({pct:.0f}%, {count}/{len(bests)}銘柄)")
+        lines.append(f"- 採択分布:")
+        for tmpl, cnt in counter.most_common():
+            lines.append(f"  - {tmpl}: {cnt}銘柄")
+
+    # 採用率
+    lines.append(f"")
+    lines.append(f"## レジーム採用率")
+    for regime in all_regimes:
+        regime_label = REGIME_OPTIONS.get(regime, regime)
+        viable_count = 0
+        total = 0
+        for rs in comparison_results:
+            regime_set = rs.filter_regime(regime)
+            best = regime_set.best_by_pnl
+            if best:
+                total += 1
+                m = best.metrics
+                if m.profit_factor > 1.0 and m.total_profit_pct > 0 and m.total_trades >= 5:
+                    viable_count += 1
+        if total > 0:
+            lines.append(f"- {regime_label}: {viable_count}/{total}銘柄で採用可 ({viable_count/total:.0%})")
+
+    lines.append(f"")
+    return "\n".join(lines)
+
+
+def _generate_detail_markdown(comparison_results):
+    """詳細比較タブ用Markdown"""
+    lines = [_compare_md_header(comparison_results)]
+    all_regimes = _compare_all_regimes(comparison_results)
+
+    # サマリーマトリクス
+    lines.append(f"## サマリーマトリクス")
+    lines.append(f"")
+    header = "| 銘柄 | " + " | ".join(
+        f"{REGIME_OPTIONS.get(r, r)}" for r in all_regimes
+    ) + " |"
+    sep = "|------|" + "|".join("------" for _ in all_regimes) + "|"
+    lines.append(header)
+    lines.append(sep)
+
+    for rs in comparison_results:
+        regime_bests = _get_regime_best_with_viability(rs)
+        cells = [rs.symbol]
+        for regime in all_regimes:
+            verdict, test_entry = _get_oos_verdict_for_symbol(rs.symbol, regime)
+            if regime in regime_bests:
+                info = regime_bests[regime]
+                entry = info["entry"]
+                display_entry = test_entry if (verdict and test_entry) else entry
+                if verdict:
+                    cells.append(f"{verdict} {display_entry.template_name} ({display_entry.composite_score:.3f})")
+                else:
+                    viable = "OK" if info["is_viable"] else "NG"
+                    cells.append(f"{viable} {entry.template_name} ({entry.composite_score:.3f})")
+            else:
+                cells.append("-")
+        lines.append("| " + " | ".join(cells) + " |")
+
+    # レジーム別ベスト
+    lines.append(f"")
+    lines.append(f"## レジーム別ベスト")
+    for regime in all_regimes:
+        regime_label = REGIME_OPTIONS.get(regime, regime)
+        lines.append(f"")
+        lines.append(f"### {regime_label}")
+        lines.append(f"")
+        lines.append(f"| 銘柄 | テンプレート | PnL | 勝率 | PF | Sharpe | DD | トレード数 |")
+        lines.append(f"|------|------------|-----|------|-----|--------|-----|----------|")
+        for rs in comparison_results:
+            regime_set = rs.filter_regime(regime)
+            best = regime_set.best_by_pnl
+            if not best:
+                continue
+            m = best.metrics
+            lines.append(
+                f"| {rs.symbol} | {best.template_name} | "
+                f"{m.total_profit_pct:+.2f}% | {m.win_rate:.1f}% | "
+                f"{m.profit_factor:.2f} | {m.sharpe_ratio:.2f} | "
+                f"{m.max_drawdown_pct:.1f}% | {m.total_trades} |"
+            )
+
+    # 共通性サマリー
+    from collections import Counter as MdCounter
+    lines.append(f"")
+    lines.append(f"## 共通性サマリー")
+    for regime in all_regimes:
+        regime_label = REGIME_OPTIONS.get(regime, regime)
+        bests = {}
+        for rs in comparison_results:
+            regime_set = rs.filter_regime(regime)
+            best = regime_set.best_by_pnl
+            if best:
+                bests[rs.symbol] = best.template_name
+        if not bests:
+            continue
+        counter = MdCounter(bests.values())
+        most_common, count = counter.most_common(1)[0]
+        pct = count / len(bests) * 100
+        lines.append(f"")
+        lines.append(f"### {regime_label}")
+        lines.append(f"- 最頻テンプレート: **{most_common}** ({pct:.0f}%, {count}/{len(bests)}銘柄)")
+
+    lines.append(f"")
+    return "\n".join(lines)
+
+
+def _build_cv_results(comparison_results):
+    """CVに使うデータソースを決定する。
+
+    OOS検証結果がある場合はOOS Test結果を使い、
+    なければTrain結果にフォールバックする。
+
+    Returns:
+        (cv_results: list, cv_source: str)
+        cv_source は "OOS Test" / "WFA OOS" / "Train"
+    """
+    from optimizer.results import OptimizationResultSet
+
+    batch_validated = st.session_state.get("batch_validated")
+    batch_wfa = st.session_state.get("batch_wfa")
+
+    if batch_validated:
+        oos_results = []
+        for symbol, validated in batch_validated.items():
+            entries = list(validated.test_results.values())
+            if entries:
+                rs = OptimizationResultSet(entries=entries)
+                rs.symbol = symbol
+                oos_results.append(rs)
+        if oos_results:
+            return oos_results, "OOS Test"
+
+    if batch_wfa:
+        oos_results = []
+        for symbol, wfa_result in batch_wfa.items():
+            # 最終フォールド（最大IS量）のOOS結果を使用
+            if wfa_result.folds:
+                last_fold = wfa_result.folds[-1]
+                entries = list(last_fold.oos_results.values())
+                if entries:
+                    rs = OptimizationResultSet(entries=entries)
+                    rs.symbol = symbol
+                    oos_results.append(rs)
+        if oos_results:
+            return oos_results, "WFA OOS"
+
+    return comparison_results, "Train"
+
+
+def _generate_cv_markdown(comparison_results):
+    """クロスバリデーションタブ用Markdown"""
+    from optimizer.cross_validation import run_cross_validation
+
+    cv_results, cv_source = _build_cv_results(comparison_results)
+    lines = [_compare_md_header(comparison_results)]
+    all_regimes = _compare_all_regimes(cv_results)
+
+    cv_result = run_cross_validation(
+        batch_results=cv_results,
+        target_regimes=all_regimes,
+    )
+    lines.append(f"## クロスバリデーション ({cv_source})")
+    for regime in all_regimes:
+        regime_result = cv_result.regime_results.get(regime)
+        if not regime_result or not regime_result.strategy_profiles:
+            continue
+        regime_label = REGIME_OPTIONS.get(regime, regime)
+        lines.append(f"")
+        lines.append(f"### {regime_label}")
+        if regime_result.dominant_template:
+            lines.append(
+                f"- 最頻テンプレート: **{regime_result.dominant_template}** "
+                f"(支配率 {regime_result.dominant_template_ratio:.0%})"
+            )
+        lines.append(f"")
+        lines.append(f"| テンプレート | 判定 | 通過率 | 通過銘柄 | 不合格銘柄 | 平均PnL |")
+        lines.append(f"|------------|------|--------|---------|----------|---------|")
+        for profile in regime_result.strategy_profiles:
+            passed = ", ".join(profile.symbols_passed) if profile.symbols_passed else "-"
+            failed = ", ".join(profile.symbols_failed) if profile.symbols_failed else "-"
+            lines.append(
+                f"| {profile.template_name} | {profile.verdict} | "
+                f"{profile.pass_rate:.0%} | {passed} | {failed} | "
+                f"{profile.avg_pnl:+.2f}% |"
+            )
+
+    lines.append(f"")
+    return "\n".join(lines)
+
+
 def _render_compare_view():
     """比較ビュー（メタ分析 / 詳細比較 タブ分割）"""
     comparison_results = st.session_state.get("comparison_results", [])
@@ -2330,13 +3110,36 @@ def _render_compare_view():
         f"({len(comparison_results)}銘柄)"
     )
 
-    tab_meta, tab_detail = st.tabs(["📊 メタ分析", "🔀 詳細比較"])
+    # 3銘柄以上ならクロスバリデーションタブを追加
+    if len(comparison_results) >= 3:
+        tab_meta, tab_detail, tab_cv = st.tabs(
+            ["📊 メタ分析", "🔀 詳細比較", "🔬 クロスバリデーション"]
+        )
+    else:
+        tab_meta, tab_detail = st.tabs(["📊 メタ分析", "🔀 詳細比較"])
+        tab_cv = None
 
     with tab_meta:
+        _render_md_copy_button(
+            _generate_meta_markdown(comparison_results),
+            button_id="cpbtn_meta",
+        )
         _render_meta_analysis_view(comparison_results)
 
     with tab_detail:
+        _render_md_copy_button(
+            _generate_detail_markdown(comparison_results),
+            button_id="cpbtn_detail",
+        )
         _render_detail_compare_view(comparison_results)
+
+    if tab_cv is not None:
+        with tab_cv:
+            _render_md_copy_button(
+                _generate_cv_markdown(comparison_results),
+                button_id="cpbtn_cv",
+            )
+            _render_cross_validation_tab(comparison_results)
 
 
 def _render_detail_compare_view(comparison_results):
@@ -2497,9 +3300,47 @@ def _render_meta_analysis_view(comparison_results):
     _render_analysis_section(meta_insights, title="メタ自動分析", icon="🧠")
 
 
+def _get_oos_verdict_for_symbol(symbol, regime):
+    """バッチOOS検証結果からPASS/CAUTION/FAIL/Noneを返す"""
+    batch_validated = st.session_state.get("batch_validated")
+    batch_wfa = st.session_state.get("batch_wfa")
+
+    if batch_validated and symbol in batch_validated:
+        validated = batch_validated[symbol]
+        test_entry = validated.test_results.get(regime)
+        has_warnings = any(f"[{regime}]" in w for w in validated.overfitting_warnings)
+        test_positive = test_entry and test_entry.metrics.total_profit_pct > 0
+        if test_positive and not has_warnings:
+            return "PASS", test_entry
+        elif test_positive and has_warnings:
+            return "CAUTION", test_entry
+        else:
+            return "FAIL", test_entry
+    elif batch_wfa and symbol in batch_wfa:
+        wfa = batch_wfa[symbol]
+        cr = wfa.consistency_ratio.get(regime, 0)
+        wfe = wfa.wfe.get(regime, 0)
+        if cr >= 0.6 and wfe > 0.3:
+            return "PASS", None
+        elif cr >= 0.4:
+            return "CAUTION", None
+        else:
+            return "FAIL", None
+
+    return None, None
+
+
 def _render_compare_summary_matrix(comparison_results):
     """セクションA: 銘柄×レジーム サマリーマトリクス"""
-    section_header("📋", "サマリーマトリクス", "銘柄×レジーム ベスト戦略一覧")
+    batch_validated = st.session_state.get("batch_validated")
+    batch_wfa = st.session_state.get("batch_wfa")
+    has_validation = bool(batch_validated or batch_wfa)
+
+    if has_validation:
+        mode_label = "OOS 3分割" if batch_validated else "Walk-Forward"
+        section_header("📋", "サマリーマトリクス", f"銘柄×レジーム ベスト戦略一覧（{mode_label}検証済み）")
+    else:
+        section_header("📋", "サマリーマトリクス", "銘柄×レジーム ベスト戦略一覧")
 
     all_regimes = sorted(set(
         e.trend_regime
@@ -2518,8 +3359,17 @@ def _render_compare_summary_matrix(comparison_results):
             if regime in regime_bests:
                 info = regime_bests[regime]
                 entry = info["entry"]
-                viable_icon = "✅" if info["is_viable"] else "❌"
-                row[col_name] = f"{viable_icon} {entry.template_name} ({entry.composite_score:.3f})"
+
+                # OOS検証結果があればそちらの判定を使う
+                verdict, test_entry = _get_oos_verdict_for_symbol(rs.symbol, regime)
+                if verdict is not None:
+                    verdict_icon = {"PASS": "✅", "CAUTION": "⚠️", "FAIL": "❌"}[verdict]
+                    # OOS PASS時はTest期間のエントリーを表示
+                    display_entry = test_entry if test_entry else entry
+                    row[col_name] = f"{verdict_icon} {display_entry.template_name} ({display_entry.composite_score:.3f})"
+                else:
+                    viable_icon = "✅" if info["is_viable"] else "❌"
+                    row[col_name] = f"{viable_icon} {entry.template_name} ({entry.composite_score:.3f})"
             else:
                 row[col_name] = "- データなし"
         rows.append(row)
@@ -2662,6 +3512,116 @@ def _render_param_similarity(bests_with_same_template):
             use_container_width=True,
             hide_index=True,
         )
+
+
+# ============================================================
+# クロスバリデーションタブ
+# ============================================================
+
+def _render_cross_validation_tab(comparison_results):
+    """クロスバリデーションタブ: 銘柄横断で戦略の汎用性を判定"""
+    from optimizer.cross_validation import (
+        run_cross_validation,
+        CrossValidationVerdict,
+    )
+
+    cv_results, cv_source = _build_cv_results(comparison_results)
+
+    section_header("🔬", "Multi-Symbol Cross-Validation",
+                   f"{len(cv_results)}銘柄の横断検証")
+
+    # データソース表示
+    if cv_source == "Train":
+        st.warning("⚠️ Train期間の生結果です（OOS検証なし → 過学習バイアスの可能性あり）")
+    elif cv_source == "OOS Test":
+        st.success("✅ OOS Test期間の結果でクロスバリデーション実行")
+    elif cv_source == "WFA OOS":
+        st.success("✅ WFA 最終フォールドOOS結果でクロスバリデーション実行")
+
+    # 対象レジームを自動検出
+    all_regimes = sorted(set(
+        e.trend_regime
+        for rs in cv_results
+        for e in rs.entries
+    ))
+
+    if not all_regimes:
+        st.info("レジーム情報が見つかりません。")
+        return
+
+    # クロスバリデーション実行
+    cv_result = run_cross_validation(
+        batch_results=cv_results,
+        target_regimes=all_regimes,
+    )
+
+    # レジーム別の結果表示
+    VERDICT_DISPLAY = {
+        CrossValidationVerdict.ALL_PASS: ("✅ ALL PASS", "success"),
+        CrossValidationVerdict.MAJORITY: ("⚠️ MAJORITY", "warning"),
+        CrossValidationVerdict.MINORITY: ("❌ MINORITY", "error"),
+        CrossValidationVerdict.FAIL: ("❌ FAIL", "error"),
+    }
+
+    for regime in all_regimes:
+        regime_result = cv_result.regime_results.get(regime)
+        if not regime_result:
+            continue
+
+        regime_label = f"{REGIME_ICONS.get(regime, '')} {REGIME_OPTIONS.get(regime, regime)}"
+        st.markdown(f"### {regime_label}")
+
+        # 最頻テンプレート情報
+        if regime_result.dominant_template:
+            st.caption(
+                f"最頻テンプレート: **{regime_result.dominant_template}** "
+                f"(支配率 {regime_result.dominant_template_ratio:.0%})"
+            )
+
+        # 戦略プロファイルテーブル
+        profile_rows = []
+        for profile in regime_result.strategy_profiles:
+            verdict_text, verdict_type = VERDICT_DISPLAY.get(
+                profile.verdict,
+                (profile.verdict, "info"),
+            )
+            profile_rows.append({
+                "テンプレート": profile.template_name,
+                "判定": verdict_text,
+                "通過率": f"{profile.pass_rate:.0%}",
+                "通過銘柄": ", ".join(profile.symbols_passed) if profile.symbols_passed else "-",
+                "不合格銘柄": ", ".join(profile.symbols_failed) if profile.symbols_failed else "-",
+                "平均PnL": f"{profile.avg_pnl:+.2f}%",
+                "PnL標準偏差": f"{profile.pnl_std:.2f}%",
+                "平均Sharpe": f"{profile.avg_sharpe:.2f}",
+                "平均勝率": f"{profile.avg_win_rate:.1f}%",
+            })
+
+        if profile_rows:
+            st.dataframe(
+                pd.DataFrame(profile_rows),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        # 各プロファイルの判定バナー
+        for profile in regime_result.strategy_profiles:
+            verdict_text, verdict_type = VERDICT_DISPLAY.get(
+                profile.verdict,
+                (profile.verdict, "info"),
+            )
+            msg = (
+                f"**{profile.template_name}**: {verdict_text} "
+                f"({len(profile.symbols_passed)}/{len(profile.symbols_passed) + len(profile.symbols_failed)}銘柄通過)"
+            )
+            if verdict_type == "success":
+                st.success(msg)
+            elif verdict_type == "warning":
+                st.warning(msg)
+            else:
+                st.error(msg)
+
+        st.divider()
 
 
 # ============================================================
