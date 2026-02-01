@@ -78,6 +78,7 @@ class TestDataSplitConfig:
         assert cfg.train_pct == 0.6
         assert cfg.val_pct == 0.2
         assert cfg.test_pct == 0.2
+        assert cfg.min_trades_for_val == 30
 
     def test_test_pct_computed(self):
         cfg = DataSplitConfig(train_pct=0.7, val_pct=0.15)
@@ -365,3 +366,133 @@ class TestRunValidatedOptimization:
         assert mock_opt.run.call_count == 1
         assert result.val_best == {}
         assert result.test_results == {}
+
+    def test_min_trades_filter_excludes_low_trade_entries(self):
+        """min_trades_for_val がTrainのトレード数でフィルタする"""
+        import pandas as pd
+
+        mock_opt = MagicMock()
+
+        # Train: 2エントリー（1つは5trades、1つは50trades）
+        low_trade_entry = _make_entry(
+            template="low_trade", regime="uptrend", score=0.9,
+            total_trades=5,  # min_trades=30 未満
+        )
+        high_trade_entry = _make_entry(
+            template="high_trade", regime="uptrend", score=0.6,
+            total_trades=50,  # min_trades=30 以上
+        )
+        train_result = OptimizationResultSet(
+            entries=[low_trade_entry, high_trade_entry]
+        )
+
+        # Val: high_trade のみ通されるべき
+        val_entry = _make_entry(
+            template="high_trade", regime="uptrend", score=0.5,
+        )
+        val_result = OptimizationResultSet(entries=[val_entry])
+
+        # Test
+        test_entry = _make_entry(
+            template="high_trade", regime="uptrend", score=0.4,
+        )
+        test_result = OptimizationResultSet(entries=[test_entry])
+
+        mock_opt.run.side_effect = [train_result, val_result, test_result]
+
+        df = pd.DataFrame({"close": range(100)})
+        configs = [{"_template_name": "t", "_params": {}, "indicators": []}]
+
+        split = DataSplitConfig(min_trades_for_val=30)
+        result = run_validated_optimization(
+            df=df,
+            all_configs=configs,
+            target_regimes=["uptrend"],
+            split_config=split,
+            optimizer=mock_opt,
+        )
+
+        # Val フェーズで渡される configs は high_trade のみ（1件）
+        val_call = mock_opt.run.call_args_list[1]
+        val_configs = val_call.kwargs.get("configs", val_call[1].get("configs") if len(val_call) > 1 else None)
+        if val_configs is None:
+            val_configs = val_call[0][1]  # positional arg
+        assert len(val_configs) == 1
+        assert val_configs[0]["_template_name"] == "high_trade"
+
+    def test_min_trades_filter_fallback_when_no_entries_pass(self):
+        """全エントリーが min_trades 未満の場合、フィルタなしで続行"""
+        import pandas as pd
+
+        mock_opt = MagicMock()
+
+        # Train: 全て5trades（min_trades=30未満）
+        entries = [
+            _make_entry(template=f"tmpl_{i}", regime="uptrend", score=0.8 - i * 0.1,
+                        total_trades=5)
+            for i in range(3)
+        ]
+        train_result = OptimizationResultSet(entries=entries)
+
+        # Val/Test
+        val_entry = _make_entry(regime="uptrend", score=0.5, total_trades=5)
+        val_result = OptimizationResultSet(entries=[val_entry])
+        test_entry = _make_entry(regime="uptrend", score=0.4, total_trades=5)
+        test_result = OptimizationResultSet(entries=[test_entry])
+
+        mock_opt.run.side_effect = [train_result, val_result, test_result]
+
+        df = pd.DataFrame({"close": range(100)})
+        configs = [{"_template_name": "t", "_params": {}, "indicators": []}]
+
+        split = DataSplitConfig(min_trades_for_val=30)
+        result = run_validated_optimization(
+            df=df,
+            all_configs=configs,
+            target_regimes=["uptrend"],
+            split_config=split,
+            optimizer=mock_opt,
+        )
+
+        # フォールバック: 全3件がValに渡される
+        assert mock_opt.run.call_count == 3
+        val_call = mock_opt.run.call_args_list[1]
+        val_configs = val_call.kwargs.get("configs", val_call[1].get("configs") if len(val_call) > 1 else None)
+        if val_configs is None:
+            val_configs = val_call[0][1]
+        assert len(val_configs) == 3
+
+    def test_min_trades_zero_disables_filter(self):
+        """min_trades_for_val=0 でフィルタ無効"""
+        import pandas as pd
+
+        mock_opt = MagicMock()
+
+        # Train: 1エントリー（2trades）
+        entry = _make_entry(
+            template="low", regime="uptrend", score=0.9,
+            total_trades=2,
+        )
+        train_result = OptimizationResultSet(entries=[entry])
+
+        val_entry = _make_entry(regime="uptrend", score=0.5)
+        val_result = OptimizationResultSet(entries=[val_entry])
+        test_entry = _make_entry(regime="uptrend", score=0.4)
+        test_result = OptimizationResultSet(entries=[test_entry])
+
+        mock_opt.run.side_effect = [train_result, val_result, test_result]
+
+        df = pd.DataFrame({"close": range(100)})
+        configs = [{"_template_name": "t", "_params": {}, "indicators": []}]
+
+        split = DataSplitConfig(min_trades_for_val=0)
+        result = run_validated_optimization(
+            df=df,
+            all_configs=configs,
+            target_regimes=["uptrend"],
+            split_config=split,
+            optimizer=mock_opt,
+        )
+
+        # フィルタなし: 2tradesエントリーもValに通される
+        assert mock_opt.run.call_count == 3

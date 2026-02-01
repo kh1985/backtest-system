@@ -33,6 +33,7 @@ class DataSplitConfig:
     train_pct: float = 0.6
     val_pct: float = 0.2
     top_n_for_val: int = 10
+    min_trades_for_val: int = 30  # Valに通す最低トレード数
 
     @property
     def test_pct(self) -> float:
@@ -55,11 +56,17 @@ class ValidatedResultSet:
     # Validation で選ばれたベスト（レジーム毎）
     val_best: Dict[str, OptimizationEntry] = field(default_factory=dict)
 
+    # Validation 全候補の結果（レジーム毎）
+    val_all_results: Dict[str, OptimizationResultSet] = field(default_factory=dict)
+
     # Test の最終評価（レジーム毎）
     test_results: Dict[str, OptimizationEntry] = field(default_factory=dict)
 
     # 分割設定
     split_config: DataSplitConfig = field(default_factory=DataSplitConfig)
+
+    # フィルタ統計（レジーム毎: total, passed, used）
+    filter_stats: Dict[str, Dict[str, int]] = field(default_factory=dict)
 
     # 分割インデックス
     train_end: int = 0
@@ -150,10 +157,36 @@ def run_validated_optimization(
 
     # ========== Phase 2: Validation ==========
     val_best: Dict[str, OptimizationEntry] = {}
+    val_all_results: Dict[str, OptimizationResultSet] = {}
+    filter_stats: Dict[str, Dict[str, int]] = {}
 
     for regime in target_regimes:
         regime_results = train_results.filter_regime(regime)
-        top_entries = regime_results.ranked()[:split_config.top_n_for_val]
+        ranked_all = regime_results.ranked()
+
+        # min_trades フィルタ: 統計的に不十分なエントリーを除外
+        min_t = split_config.min_trades_for_val
+        total_count = len(ranked_all)
+        if min_t > 0:
+            filtered = [e for e in ranked_all if e.metrics.total_trades >= min_t]
+            passed_count = len(filtered)
+            if not filtered:
+                logger.warning(
+                    f"[{regime}] Train で {min_t} 件以上のトレードを持つ"
+                    f"エントリーなし（フィルタなしで続行）"
+                )
+                filtered = ranked_all
+        else:
+            filtered = ranked_all
+            passed_count = total_count
+
+        top_entries = filtered[:split_config.top_n_for_val]
+
+        filter_stats[regime] = {
+            "total": total_count,
+            "passed": passed_count,
+            "used": len(top_entries),
+        }
 
         if not top_entries:
             continue
@@ -170,6 +203,7 @@ def run_validated_optimization(
         )
         phase_offset += len(val_configs)
 
+        val_all_results[regime] = val_result_set
         if val_result_set.best:
             val_best[regime] = val_result_set.best
 
@@ -193,14 +227,28 @@ def run_validated_optimization(
             test_results[regime] = test_result_set.best
 
     # ========== 警告生成 ==========
+    # Val-best エントリーに対応する Train メトリクスで警告を生成
     warnings = []
     for regime in target_regimes:
-        train_entry = train_results.filter_regime(regime).best
+        val_entry = val_best.get(regime)
         test_entry = test_results.get(regime)
 
-        if train_entry:
+        if not val_entry:
+            continue
+
+        # Val-best に対応する Train エントリーを探す
+        train_counterpart = None
+        for te in train_results.filter_regime(regime).entries:
+            if te.template_name == val_entry.template_name and te.params == val_entry.params:
+                train_counterpart = te
+                break
+
+        if not train_counterpart:
+            train_counterpart = train_results.filter_regime(regime).best
+
+        if train_counterpart:
             w = detect_overfitting_warnings(
-                train_entry.metrics,
+                train_counterpart.metrics,
                 test_entry.metrics if test_entry else None,
             )
             for msg in w:
@@ -212,8 +260,10 @@ def run_validated_optimization(
     return ValidatedResultSet(
         train_results=train_results,
         val_best=val_best,
+        val_all_results=val_all_results,
         test_results=test_results,
         split_config=split_config,
+        filter_stats=filter_stats,
         train_end=train_end,
         val_end=val_end,
         total_bars=n,

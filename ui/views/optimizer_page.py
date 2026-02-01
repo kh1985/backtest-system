@@ -27,12 +27,14 @@ from ui.components.styles import section_header, template_tag
 
 
 REGIME_OPTIONS = {
+    "all": "All (レジーム無視)",
     "uptrend": "Uptrend",
     "downtrend": "Downtrend",
     "range": "Range",
 }
 
 REGIME_ICONS = {
+    "all": "🌐",
     "uptrend": "📈",
     "downtrend": "📉",
     "range": "↔️",
@@ -239,9 +241,10 @@ def _render_config_view():
         target_regimes = st.multiselect(
             "対象レジーム",
             options=list(REGIME_OPTIONS.keys()),
-            default=list(REGIME_OPTIONS.keys()),
+            default=["uptrend", "downtrend", "range"],
             format_func=lambda x: f"{REGIME_ICONS.get(x, '')} {REGIME_OPTIONS[x]}",
             key="opt_regimes",
+            help="「All」= レジーム分割なしで全バーを対象",
         )
 
     with st.expander("トレンド検出パラメータ", expanded=False):
@@ -436,11 +439,22 @@ def _render_config_view():
                 key="opt_oos_top_n",
                 help="Train上位N件をValidationで再評価",
             )
+        # 2行目: Val最低トレード数
+        oos_min_trades = st.number_input(
+            "Val最低トレード数",
+            value=30,
+            min_value=0,
+            max_value=200,
+            step=5,
+            key="opt_oos_min_trades",
+            help="Trainで最低この回数以上トレードしたエントリーのみValに通す（0=フィルタなし）",
+        )
     else:
         oos_train_pct = 60
         oos_val_pct = 20
         oos_test_pct = 20
         oos_top_n = 10
+        oos_min_trades = 30
 
     st.divider()
 
@@ -487,6 +501,7 @@ def _render_config_view():
             oos_train_pct=oos_train_pct,
             oos_val_pct=oos_val_pct,
             oos_top_n=int(oos_top_n),
+            oos_min_trades=int(oos_min_trades),
         )
 
     # --- バッチ実行 ---
@@ -836,7 +851,7 @@ def _execute_validated_optimization(
     ma_fast, ma_slow, adx_period, adx_trend_th, adx_range_th,
     n_workers=1, progress_callback=None,
     data_source="original", data_period_start="", data_period_end="",
-    oos_train_pct=60, oos_val_pct=20, oos_top_n=10,
+    oos_train_pct=60, oos_val_pct=20, oos_top_n=10, oos_min_trades=30,
 ):
     """OOS検証付き最適化（Train/Val/Test 3分割）"""
     exec_ohlcv = tf_dict[exec_tf]
@@ -892,6 +907,7 @@ def _execute_validated_optimization(
         train_pct=oos_train_pct / 100.0,
         val_pct=oos_val_pct / 100.0,
         top_n_for_val=oos_top_n,
+        min_trades_for_val=oos_min_trades,
     )
 
     # OOS検証実行
@@ -930,6 +946,7 @@ def _run_optimization(
     oos_train_pct=60,
     oos_val_pct=20,
     oos_top_n=10,
+    oos_min_trades=30,
 ):
     """単一銘柄の最適化実行（UIラッパー）"""
     progress_bar = st.progress(0, text="Starting optimization...")
@@ -973,6 +990,7 @@ def _run_optimization(
             oos_train_pct=oos_train_pct,
             oos_val_pct=oos_val_pct,
             oos_top_n=oos_top_n,
+            oos_min_trades=oos_min_trades,
         )
 
         result_set = validated_result.train_results
@@ -1313,6 +1331,118 @@ def _render_regime_best_summary(result_set):
     return viable
 
 
+def _generate_results_markdown(
+    result_set,
+    validated=None,
+) -> str:
+    """結果をMarkdownテキストとして生成"""
+    from datetime import datetime
+
+    lines = []
+    lines.append(f"# {result_set.symbol} 最適化結果")
+    lines.append(f"")
+    lines.append(f"- 実行TF: {result_set.execution_tf}")
+    lines.append(f"- HTF: {result_set.htf}")
+    lines.append(f"- 総組合せ: {result_set.total_combinations}")
+    lines.append(f"- 出力日時: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+
+    # OOS セクション
+    if validated:
+        lines.append(f"")
+        lines.append(f"## OOS検証")
+        lines.append(f"")
+        lines.append(
+            f"- Train[:{validated.train_end}] / "
+            f"Val[{validated.train_end}:{validated.val_end}] / "
+            f"Test[{validated.val_end}:{validated.total_bars}]"
+        )
+
+        # フィルタ統計
+        for regime, stats in validated.filter_stats.items():
+            lines.append(
+                f"- {regime}: Train {stats.get('total', 0)}件中 "
+                f"min_trades通過 {stats.get('passed', 0)}件 → "
+                f"Val候補 {stats.get('used', 0)}件"
+            )
+
+        # 判定
+        for regime in validated.val_best.keys():
+            test_entry = validated.test_results.get(regime)
+            has_warnings = any(f"[{regime}]" in w for w in validated.overfitting_warnings)
+            test_positive = test_entry and test_entry.metrics.total_profit_pct > 0
+
+            if test_positive and not has_warnings:
+                verdict = "PASS"
+            elif test_positive and has_warnings:
+                verdict = "CAUTION"
+            else:
+                verdict = "FAIL"
+            lines.append(f"- **{regime}: {verdict}**")
+
+        # 警告
+        if validated.overfitting_warnings:
+            lines.append(f"")
+            lines.append(f"### 警告")
+            for w in validated.overfitting_warnings:
+                lines.append(f"- {w}")
+
+        # 比較テーブル
+        lines.append(f"")
+        lines.append(f"### Val-best Train/Val/Test 比較")
+        lines.append(f"")
+        lines.append(f"| レジーム | 戦略 | Train PnL | Train Trades | Val PnL | Test PnL | 劣化 |")
+        lines.append(f"|---------|------|-----------|-------------|---------|---------|------|")
+
+        for regime in validated.val_best.keys():
+            val_entry = validated.val_best.get(regime)
+            test_entry = validated.test_results.get(regime)
+            if not val_entry:
+                continue
+
+            train_entry = None
+            for te in validated.train_results.filter_regime(regime).entries:
+                if te.template_name == val_entry.template_name and te.params == val_entry.params:
+                    train_entry = te
+                    break
+
+            t_pnl = f"{train_entry.metrics.total_profit_pct:+.2f}%" if train_entry else "-"
+            t_trades = str(train_entry.metrics.total_trades) if train_entry else "-"
+            v_pnl = f"{val_entry.metrics.total_profit_pct:+.2f}%"
+            te_pnl = f"{test_entry.metrics.total_profit_pct:+.2f}%" if test_entry else "-"
+
+            decay_str = "-"
+            if test_entry and train_entry and train_entry.metrics.total_profit_pct > 0:
+                decay = (
+                    (train_entry.metrics.total_profit_pct - test_entry.metrics.total_profit_pct)
+                    / abs(train_entry.metrics.total_profit_pct) * 100
+                )
+                decay_str = f"{decay:.0f}%"
+
+            strategy = f"{val_entry.template_name} ({val_entry.param_str})"
+            lines.append(f"| {regime} | {strategy} | {t_pnl} | {t_trades} | {v_pnl} | {te_pnl} | {decay_str} |")
+
+    # ランキング上位20
+    lines.append(f"")
+    lines.append(f"## ランキング Top 20")
+    lines.append(f"")
+    lines.append(f"| # | テンプレート | パラメータ | レジーム | スコア | Trades | WR% | PF | PnL% | Sharpe | 警告 |")
+    lines.append(f"|---|------------|----------|---------|-------|--------|-----|-----|------|--------|------|")
+
+    ranked = result_set.ranked()[:20]
+    for i, e in enumerate(ranked):
+        m = e.metrics
+        warns = " / ".join(e.warnings) if e.warnings else ""
+        lines.append(
+            f"| {i} | {e.template_name} | {e.param_str} | {e.trend_regime} "
+            f"| {e.composite_score:.4f} | {m.total_trades} | {m.win_rate:.1f} "
+            f"| {m.profit_factor:.2f} | {m.total_profit_pct:+.2f} "
+            f"| {m.sharpe_ratio:.2f} | {warns} |"
+        )
+
+    lines.append(f"")
+    return "\n".join(lines)
+
+
 def _render_oos_section(validated: ValidatedResultSet):
     """OOS検証結果セクション"""
     section_header(
@@ -1322,52 +1452,98 @@ def _render_oos_section(validated: ValidatedResultSet):
         f"Test[{validated.val_end}:{validated.total_bars}]"
     )
 
-    # 警告表示
+    # ========== 判定バナー ==========
+    for regime in validated.val_best.keys():
+        test_entry = validated.test_results.get(regime)
+        val_entry = validated.val_best.get(regime)
+        stats = validated.filter_stats.get(regime, {})
+
+        if not val_entry:
+            continue
+
+        # 判定ロジック
+        has_warnings = any(f"[{regime}]" in w for w in validated.overfitting_warnings)
+        test_positive = test_entry and test_entry.metrics.total_profit_pct > 0
+
+        regime_label = f"{REGIME_ICONS.get(regime, '')} {regime}"
+
+        if test_positive and not has_warnings:
+            st.success(f"**{regime_label}: PASS** — Test期間でプラス、警告なし")
+        elif test_positive and has_warnings:
+            st.warning(f"**{regime_label}: CAUTION** — Test期間プラスだが警告あり")
+        else:
+            st.error(f"**{regime_label}: FAIL** — Test期間でマイナス（実運用非推奨）")
+
+    # ========== フィルタ統計サマリー ==========
+    for regime, stats in validated.filter_stats.items():
+        total = stats.get("total", 0)
+        passed = stats.get("passed", 0)
+        used = stats.get("used", 0)
+
+        val_results = validated.val_all_results.get(regime)
+        val_positive = 0
+        if val_results:
+            val_positive = sum(
+                1 for e in val_results.entries
+                if e.metrics.total_profit_pct > 0
+            )
+
+        regime_label = f"{REGIME_ICONS.get(regime, '')} {regime}"
+        st.caption(
+            f"{regime_label}: "
+            f"Train {total}件中 min_trades通過 {passed}件 → "
+            f"Val候補 {used}件 → Val PnLプラス {val_positive}/{used}件"
+        )
+
+    # ========== 警告表示 ==========
     if validated.overfitting_warnings:
         for w in validated.overfitting_warnings:
-            st.warning(f"⚠️ {w}")
+            st.warning(f"{w}")
 
-    # レジーム毎の Train vs Val vs Test 比較テーブル
+    # ========== Val-best の Train vs Val vs Test 比較テーブル ==========
     comparison_rows = []
     for regime in validated.val_best.keys():
-        train_entry = validated.train_results.filter_regime(regime).best
         val_entry = validated.val_best.get(regime)
         test_entry = validated.test_results.get(regime)
+
+        if not val_entry:
+            continue
+
+        # Val-best に対応する Train エントリーを探す
+        train_entry = None
+        for te in validated.train_results.filter_regime(regime).entries:
+            if te.template_name == val_entry.template_name and te.params == val_entry.params:
+                train_entry = te
+                break
+
+        if not train_entry:
+            train_entry = validated.train_results.filter_regime(regime).best
 
         if not train_entry:
             continue
 
         row = {
             "レジーム": f"{REGIME_ICONS.get(regime, '')} {regime}",
-            "戦略": f"{train_entry.template_name} ({train_entry.param_str})",
+            "戦略": f"{val_entry.template_name} ({val_entry.param_str})",
         }
 
-        # Train
         row["Train PnL"] = f"{train_entry.metrics.total_profit_pct:+.2f}%"
         row["Train Sharpe"] = f"{train_entry.metrics.sharpe_ratio:.2f}"
         row["Train Trades"] = train_entry.metrics.total_trades
+        row["Val PnL"] = f"{val_entry.metrics.total_profit_pct:+.2f}%"
+        row["Val Sharpe"] = f"{val_entry.metrics.sharpe_ratio:.2f}"
 
-        # Val
-        if val_entry:
-            row["Val PnL"] = f"{val_entry.metrics.total_profit_pct:+.2f}%"
-            row["Val Sharpe"] = f"{val_entry.metrics.sharpe_ratio:.2f}"
-        else:
-            row["Val PnL"] = "-"
-            row["Val Sharpe"] = "-"
-
-        # Test
         if test_entry:
             row["Test PnL"] = f"{test_entry.metrics.total_profit_pct:+.2f}%"
             row["Test Sharpe"] = f"{test_entry.metrics.sharpe_ratio:.2f}"
 
-            # 劣化率
             if train_entry.metrics.total_profit_pct > 0:
                 decay = (
                     (train_entry.metrics.total_profit_pct - test_entry.metrics.total_profit_pct)
                     / abs(train_entry.metrics.total_profit_pct) * 100
                 )
                 if decay > 50:
-                    row["劣化"] = f"⚠️ {decay:.0f}%"
+                    row["劣化"] = f"{decay:.0f}%"
                 elif decay > 0:
                     row["劣化"] = f"{decay:.0f}%"
                 else:
@@ -1387,6 +1563,46 @@ def _render_oos_section(validated: ValidatedResultSet):
             use_container_width=True,
             hide_index=True,
         )
+
+        # ========== Val 全候補テーブル（展開式） ==========
+        with st.expander("Val候補の詳細を表示"):
+            for regime in validated.val_all_results.keys():
+                val_results = validated.val_all_results[regime]
+                if not val_results.entries:
+                    continue
+
+                val_rows = []
+                for e in val_results.ranked():
+                    # 対応する Train エントリーを探す
+                    t_entry = None
+                    for te in validated.train_results.filter_regime(regime).entries:
+                        if te.template_name == e.template_name and te.params == e.params:
+                            t_entry = te
+                            break
+
+                    is_best = (
+                        validated.val_best.get(regime)
+                        and e.template_name == validated.val_best[regime].template_name
+                        and e.params == validated.val_best[regime].params
+                    )
+
+                    val_rows.append({
+                        "": ">> " if is_best else "",
+                        "戦略": f"{e.template_name} ({e.param_str})",
+                        "Train PnL": f"{t_entry.metrics.total_profit_pct:+.2f}%" if t_entry else "-",
+                        "Train Trades": t_entry.metrics.total_trades if t_entry else "-",
+                        "Val PnL": f"{e.metrics.total_profit_pct:+.2f}%",
+                        "Val Sharpe": f"{e.metrics.sharpe_ratio:.2f}",
+                        "Val Trades": e.metrics.total_trades,
+                    })
+
+                regime_label = f"{REGIME_ICONS.get(regime, '')} {regime}"
+                st.caption(f"**{regime_label}** Val候補 ({len(val_rows)}件)")
+                st.dataframe(
+                    pd.DataFrame(val_rows),
+                    use_container_width=True,
+                    hide_index=True,
+                )
     else:
         st.info("OOS検証結果がありません（Train期間でトレードが発生しなかった可能性）")
 
@@ -1405,16 +1621,27 @@ def _render_results_view():
 
     result_set = st.session_state.optimization_result
 
-    # ヘッダー情報
-    st.markdown(
-        f"**{result_set.symbol}** | "
-        f"Exec: `{result_set.execution_tf}` | "
-        f"HTF: `{result_set.htf}` | "
-        f"Total: **{result_set.total_combinations}** runs"
-    )
+    # ヘッダー情報 + エクスポートボタン
+    hcol1, hcol2 = st.columns([4, 1])
+    with hcol1:
+        st.markdown(
+            f"**{result_set.symbol}** | "
+            f"Exec: `{result_set.execution_tf}` | "
+            f"HTF: `{result_set.htf}` | "
+            f"Total: **{result_set.total_combinations}** runs"
+        )
+    with hcol2:
+        validated = st.session_state.get("validated_result")
+        md_text = _generate_results_markdown(result_set, validated)
+        st.download_button(
+            label="Markdown",
+            data=md_text,
+            file_name=f"{result_set.symbol}_{result_set.execution_tf}_results.md",
+            mime="text/markdown",
+            key="export_md",
+        )
 
     # --- OOS 検証結果 ---
-    validated = st.session_state.get("validated_result")
     if validated is not None:
         _render_oos_section(validated)
         st.divider()
