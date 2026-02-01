@@ -1,11 +1,13 @@
 """
-複合スコア計算
+複合スコア計算 + 過学習警告
 
 バックテスト結果のメトリクスから複合スコアを算出。
 各指標を正規化して重み付け合計する。
+過学習の疑いがある結果に警告フラグを付与する。
 """
 
 from dataclasses import dataclass
+from typing import List, Optional
 
 import numpy as np
 
@@ -80,3 +82,52 @@ def calculate_composite_score(
     )
 
     return float(np.clip(score, 0, 1))
+
+
+def detect_overfitting_warnings(
+    metrics,
+    oos_metrics=None,
+) -> List[str]:
+    """
+    過学習の警告を検出
+
+    Args:
+        metrics: Train 期間の BacktestMetrics
+        oos_metrics: Test 期間の BacktestMetrics（OOS検証時のみ）
+
+    Returns:
+        警告メッセージのリスト
+    """
+    warnings = []
+
+    # PF > 2.0: 過学習の疑い
+    if metrics.profit_factor > 2.0:
+        warnings.append(
+            f"PF={metrics.profit_factor:.2f} — 過学習の疑い（PF>2.0）"
+        )
+
+    # Sharpe > 3.0: 非現実的
+    if metrics.sharpe_ratio > 3.0:
+        warnings.append(
+            f"Sharpe={metrics.sharpe_ratio:.2f} — 非現実的（Sharpe>3.0）"
+        )
+
+    # トレード数 < 30: 統計的に不十分
+    if metrics.total_trades < 30:
+        warnings.append(
+            f"{metrics.total_trades}件 — 統計的に不十分（30件未満）"
+        )
+
+    # OOS PnL 劣化 > 50%
+    if oos_metrics is not None and metrics.total_profit_pct > 0:
+        decay = (
+            (metrics.total_profit_pct - oos_metrics.total_profit_pct)
+            / abs(metrics.total_profit_pct)
+            * 100
+        )
+        if decay > 50:
+            warnings.append(
+                f"劣化{decay:.0f}% — Train→Test で大幅劣化"
+            )
+
+    return warnings

@@ -16,8 +16,13 @@ import pandas as pd
 from data.base import Timeframe
 from analysis.trend import TrendDetector, TrendRegime
 from optimizer.templates import BUILTIN_TEMPLATES, ParameterRange
-from optimizer.scoring import ScoringWeights
+from optimizer.scoring import ScoringWeights, detect_overfitting_warnings
 from optimizer.grid import GridSearchOptimizer
+from optimizer.validation import (
+    DataSplitConfig,
+    ValidatedResultSet,
+    run_validated_optimization,
+)
 from ui.components.styles import section_header, template_tag
 
 
@@ -47,6 +52,8 @@ def render_optimizer_page():
         st.session_state.comparison_results = []
     if "regime_switching_result" not in st.session_state:
         st.session_state.regime_switching_result = None
+    if "validated_result" not in st.session_state:
+        st.session_state.validated_result = None
 
     has_results = st.session_state.optimization_result is not None
     has_data = bool(st.session_state.get("datasets"))
@@ -390,6 +397,53 @@ def _render_config_view():
 
     st.divider()
 
+    # --- 5. OOS（Out-of-Sample）検証 ---
+    section_header("🛡️", "OOS検証", "過学習防止のためのデータ分割検証")
+
+    oos_enabled = st.checkbox(
+        "OOS検証を有効化",
+        value=True,
+        key="opt_oos_enabled",
+        help="データをTrain/Validation/Testに3分割し、"
+             "グリッドサーチの過学習を検出します",
+    )
+
+    if oos_enabled:
+        oos_col1, oos_col2, oos_col3, oos_col4 = st.columns(4)
+        with oos_col1:
+            oos_train_pct = st.slider(
+                "Train %", 40, 80, 60, 5,
+                key="opt_oos_train",
+                help="グリッドサーチに使う期間の割合",
+            )
+        with oos_col2:
+            oos_val_pct = st.slider(
+                "Validation %", 10, 30, 20, 5,
+                key="opt_oos_val",
+                help="Train上位のパラメータを再評価する期間",
+            )
+        with oos_col3:
+            oos_test_pct = 100 - oos_train_pct - oos_val_pct
+            st.metric("Test %", f"{oos_test_pct}%")
+            if oos_test_pct < 10:
+                st.warning("Test期間が短すぎます")
+        with oos_col4:
+            oos_top_n = st.number_input(
+                "Val Top-N",
+                value=10,
+                min_value=3,
+                max_value=50,
+                key="opt_oos_top_n",
+                help="Train上位N件をValidationで再評価",
+            )
+    else:
+        oos_train_pct = 60
+        oos_val_pct = 20
+        oos_test_pct = 20
+        oos_top_n = 10
+
+    st.divider()
+
     # --- 実行 ---
     total_runs = total_combinations * len(target_regimes)
 
@@ -429,6 +483,10 @@ def _render_config_view():
             adx_trend_th=float(adx_trend_th),
             adx_range_th=float(adx_range_th),
             n_workers=int(n_workers),
+            oos_enabled=oos_enabled,
+            oos_train_pct=oos_train_pct,
+            oos_val_pct=oos_val_pct,
+            oos_top_n=int(oos_top_n),
         )
 
     # --- バッチ実行 ---
@@ -771,12 +829,107 @@ def _execute_single_optimization(
     return result_set
 
 
+def _execute_validated_optimization(
+    tf_dict, exec_tf, htf, trend_method, target_regimes,
+    selected_templates, custom_ranges, scoring_weights,
+    initial_capital, commission, slippage,
+    ma_fast, ma_slow, adx_period, adx_trend_th, adx_range_th,
+    n_workers=1, progress_callback=None,
+    data_source="original", data_period_start="", data_period_end="",
+    oos_train_pct=60, oos_val_pct=20, oos_top_n=10,
+):
+    """OOS検証付き最適化（Train/Val/Test 3分割）"""
+    exec_ohlcv = tf_dict[exec_tf]
+    exec_df = exec_ohlcv.df.copy()
+
+    # トレンドラベル付与（全データに対して）
+    if htf and htf in tf_dict:
+        htf_ohlcv = tf_dict[htf]
+        htf_df = htf_ohlcv.df.copy()
+
+        detector = TrendDetector()
+
+        if trend_method == "ma_cross":
+            htf_df = detector.detect_ma_cross(
+                htf_df, fast_period=ma_fast, slow_period=ma_slow
+            )
+        elif trend_method == "adx":
+            htf_df = detector.detect_adx(
+                htf_df, adx_period=adx_period,
+                trend_threshold=adx_trend_th,
+                range_threshold=adx_range_th,
+            )
+        else:  # combined
+            htf_df = detector.detect_combined(
+                htf_df, ma_fast=ma_fast, ma_slow=ma_slow,
+                adx_period=adx_period,
+                adx_trend_threshold=adx_trend_th,
+                adx_range_threshold=adx_range_th,
+            )
+
+        exec_df = TrendDetector.label_execution_tf(exec_df, htf_df)
+    else:
+        exec_df["trend_regime"] = TrendRegime.RANGE.value
+
+    # config生成
+    all_configs = []
+    for tname in selected_templates:
+        template = BUILTIN_TEMPLATES[tname]
+        tpl_ranges = custom_ranges.get(tname, {})
+        configs = template.generate_configs(tpl_ranges)
+        all_configs.extend(configs)
+
+    # オプティマイザ
+    optimizer = GridSearchOptimizer(
+        initial_capital=initial_capital,
+        commission_pct=commission,
+        slippage_pct=slippage,
+        scoring_weights=scoring_weights,
+    )
+
+    # 分割設定
+    split_config = DataSplitConfig(
+        train_pct=oos_train_pct / 100.0,
+        val_pct=oos_val_pct / 100.0,
+        top_n_for_val=oos_top_n,
+    )
+
+    # OOS検証実行
+    validated = run_validated_optimization(
+        df=exec_df,
+        all_configs=all_configs,
+        target_regimes=target_regimes,
+        split_config=split_config,
+        optimizer=optimizer,
+        progress_callback=progress_callback,
+        n_workers=n_workers,
+    )
+
+    # メタ情報をtrain_resultsに付与
+    validated.train_results.symbol = exec_ohlcv.symbol
+    validated.train_results.execution_tf = exec_tf
+    validated.train_results.htf = htf or ""
+    validated.train_results.data_source = data_source
+    validated.train_results.data_period_start = data_period_start
+    validated.train_results.data_period_end = data_period_end
+
+    # Train結果に警告を付与
+    for entry in validated.train_results.entries:
+        entry.warnings = detect_overfitting_warnings(entry.metrics)
+
+    return validated
+
+
 def _run_optimization(
     exec_tf, htf, trend_method, target_regimes,
     selected_templates, custom_ranges, scoring_weights,
     initial_capital, commission, slippage,
     ma_fast, ma_slow, adx_period, adx_trend_th, adx_range_th,
     n_workers=1,
+    oos_enabled=False,
+    oos_train_pct=60,
+    oos_val_pct=20,
+    oos_top_n=10,
 ):
     """単一銘柄の最適化実行（UIラッパー）"""
     progress_bar = st.progress(0, text="Starting optimization...")
@@ -785,40 +938,81 @@ def _run_optimization(
     def on_progress(current, total, desc):
         elapsed = time.time() - start_time
         speed = current / elapsed if elapsed > 0 else 0
+        pct = min(current / total, 1.0) if total > 0 else 0
         progress_bar.progress(
-            current / total,
-            text=f"⚡ {current}/{total} ({speed:.0f} runs/s) [{elapsed:.1f}s]",
+            pct,
+            text=f"⚡ {current}/{total} ({speed:.0f} runs/s) [{elapsed:.1f}s] {desc}",
         )
 
     ds_info = st.session_state.get("opt_data_source_info", {})
 
-    result_set = _execute_single_optimization(
-        tf_dict=st.session_state.ohlcv_dict,
-        exec_tf=exec_tf,
-        htf=htf,
-        trend_method=trend_method,
-        target_regimes=target_regimes,
-        selected_templates=selected_templates,
-        custom_ranges=custom_ranges,
-        scoring_weights=scoring_weights,
-        initial_capital=initial_capital,
-        commission=commission,
-        slippage=slippage,
-        ma_fast=ma_fast,
-        ma_slow=ma_slow,
-        adx_period=adx_period,
-        adx_trend_th=adx_trend_th,
-        adx_range_th=adx_range_th,
-        n_workers=n_workers,
-        progress_callback=on_progress,
-        data_source=ds_info.get("source", "original"),
-        data_period_start=ds_info.get("period_start", ""),
-        data_period_end=ds_info.get("period_end", ""),
-    )
+    if oos_enabled:
+        # OOS 検証付き最適化
+        validated_result = _execute_validated_optimization(
+            tf_dict=st.session_state.ohlcv_dict,
+            exec_tf=exec_tf,
+            htf=htf,
+            trend_method=trend_method,
+            target_regimes=target_regimes,
+            selected_templates=selected_templates,
+            custom_ranges=custom_ranges,
+            scoring_weights=scoring_weights,
+            initial_capital=initial_capital,
+            commission=commission,
+            slippage=slippage,
+            ma_fast=ma_fast,
+            ma_slow=ma_slow,
+            adx_period=adx_period,
+            adx_trend_th=adx_trend_th,
+            adx_range_th=adx_range_th,
+            n_workers=n_workers,
+            progress_callback=on_progress,
+            data_source=ds_info.get("source", "original"),
+            data_period_start=ds_info.get("period_start", ""),
+            data_period_end=ds_info.get("period_end", ""),
+            oos_train_pct=oos_train_pct,
+            oos_val_pct=oos_val_pct,
+            oos_top_n=oos_top_n,
+        )
+
+        result_set = validated_result.train_results
+        st.session_state.optimization_result = result_set
+        st.session_state.validated_result = validated_result
+    else:
+        # 従来の最適化（OOS なし）
+        result_set = _execute_single_optimization(
+            tf_dict=st.session_state.ohlcv_dict,
+            exec_tf=exec_tf,
+            htf=htf,
+            trend_method=trend_method,
+            target_regimes=target_regimes,
+            selected_templates=selected_templates,
+            custom_ranges=custom_ranges,
+            scoring_weights=scoring_weights,
+            initial_capital=initial_capital,
+            commission=commission,
+            slippage=slippage,
+            ma_fast=ma_fast,
+            ma_slow=ma_slow,
+            adx_period=adx_period,
+            adx_trend_th=adx_trend_th,
+            adx_range_th=adx_range_th,
+            n_workers=n_workers,
+            progress_callback=on_progress,
+            data_source=ds_info.get("source", "original"),
+            data_period_start=ds_info.get("period_start", ""),
+            data_period_end=ds_info.get("period_end", ""),
+        )
+
+        # 警告を付与（OOSなしでもPF/Sharpe/Trade数の警告は出す）
+        for entry in result_set.entries:
+            entry.warnings = detect_overfitting_warnings(entry.metrics)
+
+        st.session_state.optimization_result = result_set
+        st.session_state.validated_result = None
 
     elapsed = time.time() - start_time
 
-    st.session_state.optimization_result = result_set
     progress_bar.progress(1.0, text=f"✅ Done! [{elapsed:.1f}s]")
 
     saved_path = _save_results(result_set)
@@ -1119,6 +1313,84 @@ def _render_regime_best_summary(result_set):
     return viable
 
 
+def _render_oos_section(validated: ValidatedResultSet):
+    """OOS検証結果セクション"""
+    section_header(
+        "🛡️", "OOS検証結果",
+        f"Train[:{validated.train_end}] / "
+        f"Val[{validated.train_end}:{validated.val_end}] / "
+        f"Test[{validated.val_end}:{validated.total_bars}]"
+    )
+
+    # 警告表示
+    if validated.overfitting_warnings:
+        for w in validated.overfitting_warnings:
+            st.warning(f"⚠️ {w}")
+
+    # レジーム毎の Train vs Val vs Test 比較テーブル
+    comparison_rows = []
+    for regime in validated.val_best.keys():
+        train_entry = validated.train_results.filter_regime(regime).best
+        val_entry = validated.val_best.get(regime)
+        test_entry = validated.test_results.get(regime)
+
+        if not train_entry:
+            continue
+
+        row = {
+            "レジーム": f"{REGIME_ICONS.get(regime, '')} {regime}",
+            "戦略": f"{train_entry.template_name} ({train_entry.param_str})",
+        }
+
+        # Train
+        row["Train PnL"] = f"{train_entry.metrics.total_profit_pct:+.2f}%"
+        row["Train Sharpe"] = f"{train_entry.metrics.sharpe_ratio:.2f}"
+        row["Train Trades"] = train_entry.metrics.total_trades
+
+        # Val
+        if val_entry:
+            row["Val PnL"] = f"{val_entry.metrics.total_profit_pct:+.2f}%"
+            row["Val Sharpe"] = f"{val_entry.metrics.sharpe_ratio:.2f}"
+        else:
+            row["Val PnL"] = "-"
+            row["Val Sharpe"] = "-"
+
+        # Test
+        if test_entry:
+            row["Test PnL"] = f"{test_entry.metrics.total_profit_pct:+.2f}%"
+            row["Test Sharpe"] = f"{test_entry.metrics.sharpe_ratio:.2f}"
+
+            # 劣化率
+            if train_entry.metrics.total_profit_pct > 0:
+                decay = (
+                    (train_entry.metrics.total_profit_pct - test_entry.metrics.total_profit_pct)
+                    / abs(train_entry.metrics.total_profit_pct) * 100
+                )
+                if decay > 50:
+                    row["劣化"] = f"⚠️ {decay:.0f}%"
+                elif decay > 0:
+                    row["劣化"] = f"{decay:.0f}%"
+                else:
+                    row["劣化"] = f"改善 {abs(decay):.0f}%"
+            else:
+                row["劣化"] = "-"
+        else:
+            row["Test PnL"] = "-"
+            row["Test Sharpe"] = "-"
+            row["劣化"] = "-"
+
+        comparison_rows.append(row)
+
+    if comparison_rows:
+        st.dataframe(
+            pd.DataFrame(comparison_rows),
+            use_container_width=True,
+            hide_index=True,
+        )
+    else:
+        st.info("OOS検証結果がありません（Train期間でトレードが発生しなかった可能性）")
+
+
 def _render_results_view():
     """結果ビュー"""
     if st.session_state.optimization_result is None:
@@ -1140,6 +1412,12 @@ def _render_results_view():
         f"HTF: `{result_set.htf}` | "
         f"Total: **{result_set.total_combinations}** runs"
     )
+
+    # --- OOS 検証結果 ---
+    validated = st.session_state.get("validated_result")
+    if validated is not None:
+        _render_oos_section(validated)
+        st.divider()
 
     # --- レジーム別ベスト戦略サマリー ---
     viable_strategies = _render_regime_best_summary(result_set)
@@ -1186,9 +1464,9 @@ def _render_results_view():
             "最低取引数",
             min_value=0,
             max_value=50,
-            value=0,
+            value=5,
             key="result_min_trades",
-            help="取引回数が少なすぎる結果を除外。5以上推奨",
+            help="取引回数が少なすぎる結果を除外（デフォルト5）",
         )
 
     # フィルタリング
@@ -1268,6 +1546,10 @@ def _render_results_view():
             "シャープ比",
             help="リスクあたりのリターン。1.0以上が良い、2.0以上は優秀",
             format="%.2f",
+        ),
+        "warnings": st.column_config.TextColumn(
+            "⚠️ 警告",
+            help="過学習の疑いがある場合に表示。PF>2.0, Sharpe>3.0, Trade<30",
         ),
     }
 

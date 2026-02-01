@@ -23,6 +23,7 @@ class OptimizationEntry:
     metrics: BacktestMetrics
     composite_score: float
     backtest_result: Optional[BacktestResult] = None  # 上位N件のみ保持
+    warnings: List[str] = field(default_factory=list)  # 過学習警告
 
     @property
     def param_str(self) -> str:
@@ -94,6 +95,7 @@ class OptimizationResultSet:
                 "total_pnl": round(e.metrics.total_profit_pct, 2),
                 "max_dd": round(e.metrics.max_drawdown_pct, 2),
                 "sharpe": round(e.metrics.sharpe_ratio, 2),
+                "warnings": " / ".join(e.warnings) if e.warnings else "",
             }
             rows.append(row)
 

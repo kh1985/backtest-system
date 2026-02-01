@@ -12,7 +12,7 @@ import logging
 import multiprocessing
 from concurrent.futures import ProcessPoolExecutor, as_completed, BrokenExecutor
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional, Any
+from typing import Callable, Dict, List, Optional, Any, Tuple
 
 import pandas as pd
 
@@ -49,6 +49,7 @@ class _BacktestTask:
     commission_pct: float
     slippage_pct: float
     scoring_weights: ScoringWeights
+    data_range: Optional[Tuple[int, int]] = None
 
 
 # ワーカープロセス内で保持する事前計算済みDataFrame
@@ -89,6 +90,7 @@ def _run_single_task(task: _BacktestTask) -> Optional[OptimizationEntry]:
             params=task.params,
             target_regime=task.target_regime,
             trend_column=task.trend_column,
+            data_range=task.data_range,
         )
 
         # メモリ削減: ワーカーからメインプロセスへの転送量を減らす
@@ -163,6 +165,7 @@ class GridSearchOptimizer:
         trend_column: str = "trend_regime",
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
         n_workers: int = 1,
+        data_range: Optional[Tuple[int, int]] = None,
     ) -> OptimizationResultSet:
         """
         グリッドサーチを実行
@@ -175,18 +178,22 @@ class GridSearchOptimizer:
             trend_column: トレンドレジームカラム名
             progress_callback: 進捗コールバック(current, total, description)
             n_workers: 並列ワーカー数（1=逐次、2+=並列）
+            data_range: バックテスト範囲 (start_idx, end_idx)。
+                        Noneの場合は全データ。インジケーターは全データで計算し、
+                        バックテストループのみ指定範囲で実行。
 
         Returns:
             OptimizationResultSet
         """
         if n_workers <= 1:
             return self._run_sequential(
-                df, configs, target_regimes, trend_column, progress_callback
+                df, configs, target_regimes, trend_column,
+                progress_callback, data_range,
             )
         else:
             return self._run_parallel(
                 df, configs, target_regimes, trend_column,
-                progress_callback, n_workers
+                progress_callback, n_workers, data_range,
             )
 
     def _run_sequential(
@@ -196,6 +203,7 @@ class GridSearchOptimizer:
         target_regimes: List[str],
         trend_column: str,
         progress_callback: Optional[Callable[[int, int, str], None]],
+        data_range: Optional[Tuple[int, int]] = None,
     ) -> OptimizationResultSet:
         """逐次実行（既存動作と同一）"""
         result_set = OptimizationResultSet()
@@ -222,6 +230,7 @@ class GridSearchOptimizer:
                         params=params,
                         target_regime=regime,
                         trend_column=trend_column,
+                        data_range=data_range,
                     )
                     result_set.add(entry)
                 except Exception:
@@ -238,6 +247,7 @@ class GridSearchOptimizer:
         trend_column: str,
         progress_callback: Optional[Callable[[int, int, str], None]],
         n_workers: int,
+        data_range: Optional[Tuple[int, int]] = None,
     ) -> OptimizationResultSet:
         """並列実行（ProcessPoolExecutor）"""
         result_set = OptimizationResultSet()
@@ -292,6 +302,7 @@ class GridSearchOptimizer:
                     commission_pct=self.commission_pct,
                     slippage_pct=self.slippage_pct,
                     scoring_weights=self.scoring_weights,
+                    data_range=data_range,
                 ))
                 task_id += 1
 
@@ -342,11 +353,12 @@ class GridSearchOptimizer:
         params: Dict[str, Any],
         target_regime: str,
         trend_column: str,
+        data_range: Optional[Tuple[int, int]] = None,
     ) -> OptimizationEntry:
         """1つの組み合わせでバックテストを実行"""
         strategy = ConfigStrategy(config)
 
-        # インジケーター計算（キャッシュ利用）
+        # インジケーター計算（キャッシュ利用）— 全データで計算
         indicator_configs = config.get("indicators", [])
         cache_key = self._indicator_cache.get_key(indicator_configs)
         cached_df = self._indicator_cache.get(cache_key)
@@ -363,7 +375,7 @@ class GridSearchOptimizer:
         # --- Numba 高速パス ---
         return self._run_numba(
             work_df, config, strategy, template_name, params,
-            target_regime, trend_column,
+            target_regime, trend_column, data_range,
         )
 
     def _run_numba(
@@ -375,16 +387,17 @@ class GridSearchOptimizer:
         params: Dict[str, Any],
         target_regime: str,
         trend_column: str,
+        data_range: Optional[Tuple[int, int]] = None,
     ) -> OptimizationEntry:
         """ベクトル化シグナル + Numba JIT ループでバックテスト"""
-        # エントリーシグナルをベクトル演算で一括計算
+        # エントリーシグナルをベクトル演算で一括計算（全データで）
         entry_signals = vectorize_entry_signals(
             work_df,
             config.get("entry_conditions", []),
             config.get("entry_logic", "and"),
         )
 
-        # レジームマスク
+        # レジームマスク（全データで）
         if target_regime == "all":
             regime_mask = np.ones(len(work_df), dtype=np.bool_)
         else:
@@ -393,10 +406,19 @@ class GridSearchOptimizer:
             else:
                 regime_mask = np.ones(len(work_df), dtype=np.bool_)
 
-        # numpy 配列抽出
+        # numpy 配列抽出（全データ）
         high = work_df["high"].values.astype(np.float64)
         low = work_df["low"].values.astype(np.float64)
         close = work_df["close"].values.astype(np.float64)
+
+        # data_range が指定されている場合、バックテスト範囲をスライス
+        if data_range is not None:
+            start, end = data_range
+            high = high[start:end]
+            low = low[start:end]
+            close = close[start:end]
+            entry_signals = entry_signals[start:end]
+            regime_mask = regime_mask[start:end]
 
         is_long = config.get("side", "long") == "long"
         exit_conf = config.get("exit", {})
