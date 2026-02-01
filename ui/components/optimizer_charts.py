@@ -628,3 +628,27 @@ def create_ohlcv_preview_chart(
     fig.update_yaxes(title_text="Vol", row=2, col=1)
 
     return fig
+
+
+def create_regime_switching_equity_chart(
+    equity_curve: np.ndarray,
+    title: str = "レジーム切替バックテスト - エクイティカーブ",
+) -> go.Figure:
+    """レジーム切替バックテストのエクイティカーブを描画"""
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=list(range(len(equity_curve))),
+        y=equity_curve,
+        mode="lines",
+        name="Equity",
+        line=dict(color="#42a5f5", width=2),
+    ))
+    fig.update_layout(
+        template="plotly_dark",
+        title=dict(text=title, font=dict(size=13)),
+        xaxis_title="Trade #",
+        yaxis_title="Equity",
+        height=350,
+        margin=dict(l=50, r=20, t=40, b=40),
+    )
+    return fig

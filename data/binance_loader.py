@@ -149,19 +149,20 @@ class BinanceCSVLoader(DataSource):
 
     def _normalize(self, df: pd.DataFrame) -> pd.DataFrame:
         """Binance形式をOHLCV標準形式に変換"""
+        import numpy as np
+
         result = pd.DataFrame()
 
         # open_timeをdatetimeに変換
         if "open_time" in df.columns:
             ts = pd.to_numeric(df["open_time"], errors="coerce")
-            # マイクロ秒 / ミリ秒 / 秒の判定
-            first_val = ts.iloc[0]
-            if first_val > 1e15:
-                result["datetime"] = pd.to_datetime(ts, unit="us")
-            elif first_val > 1e12:
-                result["datetime"] = pd.to_datetime(ts, unit="ms")
-            else:
-                result["datetime"] = pd.to_datetime(ts, unit="s")
+            # 行ごとに単位が混在する場合があるため、全てミリ秒に正規化
+            ts_ms = np.where(
+                ts > 1e15, ts / 1000,       # マイクロ秒 → ミリ秒
+                np.where(ts > 1e12, ts,      # ミリ秒そのまま
+                         ts * 1000)           # 秒 → ミリ秒
+            )
+            result["datetime"] = pd.to_datetime(ts_ms, unit="ms")
         elif "datetime" in df.columns:
             result["datetime"] = pd.to_datetime(df["datetime"])
         else:

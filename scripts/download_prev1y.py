@@ -1,28 +1,40 @@
 """
-Binance data.binance.vision から複数銘柄の1年分データをダウンロード
+Binance data.binance.vision から前年データをダウンロード
 
-対象: SOLUSDT, XRPUSDT, DOGEUSDT, ETHUSDT
-期間: 2025-02 ~ 2026-01（約1年）
-TF:   1m, 15m, 1h, 4h
+期間: 2024-02 ~ 2025-01（約1年、現行データの1年前）
+出力: inputdata/{SYMBOL}-{TF}-prev1y-merged.csv
+対象: 既存30銘柄すべて
 """
 
-import os
-import sys
 import zipfile
 import urllib.request
 import urllib.error
 from datetime import date, timedelta
 from pathlib import Path
 
-SYMBOLS = ["SOLUSDT", "XRPUSDT", "DOGEUSDT", "ETHUSDT"]
+SYMBOLS = [
+    # 既存17銘柄
+    "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT",
+    "SUIUSDT", "TRXUSDT", "ADAUSDT", "BNBUSDT", "AVAXUSDT",
+    "LINKUSDT", "DOTUSDT", "LTCUSDT", "NEARUSDT", "APTUSDT",
+    "UNIUSDT", "PEPEUSDT",
+    # Batch 4 追加13銘柄
+    "AAVEUSDT", "ATOMUSDT", "ARBUSDT", "OPUSDT",
+    "FILUSDT", "INJUSDT", "SEIUSDT", "TIAUSDT",
+    "RENDERUSDT", "ENAUSDT", "ONDOUSDT", "WIFUSDT", "JUPUSDT",
+]
 TIMEFRAMES = ["1m", "15m", "1h", "4h"]
 
-MONTHLY_START = (2025, 2)
-MONTHLY_END = (2025, 12)
-DAILY_START = date(2026, 1, 1)
-DAILY_END = date(2026, 1, 28)
+# 前年期間: 2024-02 ~ 2025-01
+MONTHLY_START = (2024, 2)
+MONTHLY_END = (2024, 12)
+DAILY_START = date(2025, 1, 1)
+DAILY_END = date(2025, 1, 31)
 
-BASE_DIR = Path(__file__).resolve().parent.parent / "sample_data" / "binance"
+PROJECT_DIR = Path(__file__).resolve().parent.parent
+TEMP_DIR = PROJECT_DIR / "sample_data" / "binance"
+OUTPUT_DIR = PROJECT_DIR / "inputdata"
+
 MONTHLY_BASE = "https://data.binance.vision/data/spot/monthly/klines"
 DAILY_BASE = "https://data.binance.vision/data/spot/daily/klines"
 
@@ -68,14 +80,15 @@ def generate_dates(start, end):
 
 
 def download_symbol(symbol):
-    output_dir = BASE_DIR / f"{symbol}_1y"
-    output_dir.mkdir(parents=True, exist_ok=True)
+    zip_dir = TEMP_DIR / f"{symbol}_prev1y"
+    zip_dir.mkdir(parents=True, exist_ok=True)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     months = generate_months(MONTHLY_START, MONTHLY_END)
     dates = generate_dates(DAILY_START, DAILY_END)
 
     print(f"\n{'='*50}")
-    print(f"  {symbol} - 1 Year Download")
+    print(f"  {symbol} - Prev 1 Year (2024-02 ~ 2025-01)")
     print(f"{'='*50}")
 
     downloaded = 0
@@ -83,7 +96,7 @@ def download_symbol(symbol):
     failed = 0
 
     for tf in TIMEFRAMES:
-        tf_dir = output_dir / tf
+        tf_dir = zip_dir / tf
         tf_dir.mkdir(exist_ok=True)
         print(f"  --- {tf} ---")
 
@@ -124,22 +137,22 @@ def download_symbol(symbol):
 
     print(f"  Downloaded: {downloaded} / Skipped: {skipped} / Failed: {failed}")
 
-    # マージ
     print(f"  Merging...")
-    merge_zips(symbol, output_dir)
+    merge_zips(symbol, zip_dir)
 
     return downloaded, skipped, failed
 
 
-def merge_zips(symbol, output_dir):
+def merge_zips(symbol, zip_dir):
     for tf in TIMEFRAMES:
-        tf_dir = output_dir / tf
+        tf_dir = zip_dir / tf
         zips = sorted(tf_dir.glob("*.zip"))
         if not zips:
             print(f"    {tf}: No ZIPs found")
             continue
 
-        output_csv = BASE_DIR / f"{symbol}-{tf}-20250201-20260130-merged.csv"
+        # ファイル名で区別: prev1y
+        output_csv = OUTPUT_DIR / f"{symbol}-{tf}-20240201-20250131-merged.csv"
         rows = []
 
         for zp in zips:
@@ -174,10 +187,11 @@ def merge_zips(symbol, output_dir):
 
 
 def main():
-    print(f"=== Multi-Symbol Download (1 Year) ===")
-    print(f"Symbols: {SYMBOLS}")
+    print(f"=== Previous Year Download (2024-02 ~ 2025-01) ===")
+    print(f"Symbols: {len(SYMBOLS)} symbols")
     print(f"Period: {MONTHLY_START[0]}-{MONTHLY_START[1]:02d} ~ {DAILY_END}")
     print(f"Timeframes: {TIMEFRAMES}")
+    print(f"Output: {OUTPUT_DIR} (*-prev1y-merged.csv)")
 
     total_dl = 0
     total_skip = 0

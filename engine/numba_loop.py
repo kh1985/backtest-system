@@ -195,6 +195,188 @@ def _backtest_loop(
     )
 
 
+@njit(cache=True)
+def _backtest_loop_regime_switching(
+    high: np.ndarray,
+    low: np.ndarray,
+    close: np.ndarray,
+    entry_signals_0: np.ndarray,
+    entry_signals_1: np.ndarray,
+    entry_signals_2: np.ndarray,
+    regime_array: np.ndarray,
+    is_long_0: bool, is_long_1: bool, is_long_2: bool,
+    tp_pct_0: float, tp_pct_1: float, tp_pct_2: float,
+    sl_pct_0: float, sl_pct_1: float, sl_pct_2: float,
+    trailing_pct_0: float, trailing_pct_1: float, trailing_pct_2: float,
+    timeout_bars_0: int, timeout_bars_1: int, timeout_bars_2: int,
+    commission_pct: float,
+    slippage_pct: float,
+    initial_capital: float,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    レジーム切替バックテストループ。
+
+    3レジーム（0=uptrend, 1=downtrend, 2=range）ごとに
+    異なるシグナル・パラメータを使用。ポジション保持中はエントリー時のパラメータ維持。
+
+    Returns:
+        (profit_pcts, durations, equity_curve, trade_regimes)
+    """
+    n = len(high)
+    max_trades = n
+    profit_pcts = np.empty(max_trades, dtype=np.float64)
+    durations = np.empty(max_trades, dtype=np.int64)
+    trade_regimes = np.empty(max_trades, dtype=np.int64)
+    trade_count = 0
+
+    equity = initial_capital
+    equity_curve = np.empty(max_trades + 1, dtype=np.float64)
+    equity_curve[0] = equity
+
+    in_position = False
+    entry_price = 0.0
+    entry_idx = 0
+    tp_price = 0.0
+    sl_price = 0.0
+    highest_price = 0.0
+    lowest_price = 1e18
+    pos_is_long = True
+    pos_trailing_pct = 0.0
+    pos_timeout_bars = 0
+
+    for i in range(1, n):
+        # === 決済判定 ===
+        if in_position:
+            h = high[i]
+            l = low[i]
+            c = close[i]
+
+            if pos_trailing_pct > 0.0:
+                if pos_is_long:
+                    if h > highest_price:
+                        highest_price = h
+                    new_sl = highest_price * (1.0 - pos_trailing_pct / 100.0)
+                    if new_sl > sl_price:
+                        sl_price = new_sl
+                else:
+                    if l < lowest_price:
+                        lowest_price = l
+                    new_sl = lowest_price * (1.0 + pos_trailing_pct / 100.0)
+                    if new_sl < sl_price:
+                        sl_price = new_sl
+
+            duration = i - entry_idx
+            exited = False
+            exit_price = 0.0
+
+            if pos_timeout_bars > 0 and duration >= pos_timeout_bars:
+                exit_price = c
+                exited = True
+
+            if not exited:
+                if pos_is_long:
+                    if h >= tp_price:
+                        exit_price = tp_price
+                        exited = True
+                    elif l <= sl_price:
+                        exit_price = sl_price
+                        exited = True
+                else:
+                    if l <= tp_price:
+                        exit_price = tp_price
+                        exited = True
+                    elif h >= sl_price:
+                        exit_price = sl_price
+                        exited = True
+
+            if exited:
+                if pos_is_long:
+                    pnl_pct = (exit_price - entry_price) / entry_price * 100.0
+                else:
+                    pnl_pct = (entry_price - exit_price) / entry_price * 100.0
+                pnl_pct -= commission_pct * 2.0
+
+                profit_pcts[trade_count] = pnl_pct
+                durations[trade_count] = duration
+                trade_count += 1
+                equity += equity * (pnl_pct / 100.0)
+                equity_curve[trade_count] = equity
+                in_position = False
+
+        # === エントリー判定（レジーム切替） ===
+        if not in_position:
+            r = regime_array[i]
+            if r == 0:
+                signal = entry_signals_0[i]
+                cur_is_long = is_long_0
+                cur_tp = tp_pct_0
+                cur_sl = sl_pct_0
+                cur_trail = trailing_pct_0
+                cur_tout = timeout_bars_0
+            elif r == 1:
+                signal = entry_signals_1[i]
+                cur_is_long = is_long_1
+                cur_tp = tp_pct_1
+                cur_sl = sl_pct_1
+                cur_trail = trailing_pct_1
+                cur_tout = timeout_bars_1
+            else:
+                signal = entry_signals_2[i]
+                cur_is_long = is_long_2
+                cur_tp = tp_pct_2
+                cur_sl = sl_pct_2
+                cur_trail = trailing_pct_2
+                cur_tout = timeout_bars_2
+
+            if signal:
+                entry_price = close[i]
+                if slippage_pct > 0.0:
+                    if cur_is_long:
+                        entry_price *= (1.0 + slippage_pct / 100.0)
+                    else:
+                        entry_price *= (1.0 - slippage_pct / 100.0)
+
+                entry_idx = i
+                pos_is_long = cur_is_long
+                pos_trailing_pct = cur_trail
+                pos_timeout_bars = cur_tout
+
+                if pos_is_long:
+                    tp_price = entry_price * (1.0 + cur_tp / 100.0) if cur_tp > 0.0 else 1e18
+                    sl_price = entry_price * (1.0 - cur_sl / 100.0)
+                else:
+                    tp_price = entry_price * (1.0 - cur_tp / 100.0) if cur_tp > 0.0 else -1.0
+                    sl_price = entry_price * (1.0 + cur_sl / 100.0)
+
+                highest_price = entry_price
+                lowest_price = entry_price
+                in_position = True
+                trade_regimes[trade_count] = r
+
+    # 未決済ポジション強制決済
+    if in_position:
+        c = close[n - 1]
+        duration = (n - 1) - entry_idx
+        if pos_is_long:
+            pnl_pct = (c - entry_price) / entry_price * 100.0
+        else:
+            pnl_pct = (entry_price - c) / entry_price * 100.0
+        pnl_pct -= commission_pct * 2.0
+
+        profit_pcts[trade_count] = pnl_pct
+        durations[trade_count] = duration
+        trade_count += 1
+        equity += equity * (pnl_pct / 100.0)
+        equity_curve[trade_count] = equity
+
+    return (
+        profit_pcts[:trade_count],
+        durations[:trade_count],
+        equity_curve[:trade_count + 1],
+        trade_regimes[:trade_count],
+    )
+
+
 def vectorize_entry_signals(
     df: pd.DataFrame,
     entry_conditions: List[Dict[str, Any]],

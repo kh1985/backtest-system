@@ -45,6 +45,8 @@ def render_optimizer_page():
         st.session_state.optimizer_view = "config"
     if "comparison_results" not in st.session_state:
         st.session_state.comparison_results = []
+    if "regime_switching_result" not in st.session_state:
+        st.session_state.regime_switching_result = None
 
     has_results = st.session_state.optimization_result is not None
     has_data = bool(st.session_state.get("datasets"))
@@ -190,20 +192,22 @@ def _render_config_view():
 
     col1, col2 = st.columns(2)
     with col1:
+        exec_default = loaded_tfs.index("15m") if "15m" in loaded_tfs else 0
         exec_tf = st.selectbox(
             "実行タイムフレーム",
             options=loaded_tfs,
-            index=0,
+            index=exec_default,
             key="opt_exec_tf",
             help="バックテストを実行するタイムフレーム",
         )
     with col2:
         htf_options = [tf for tf in loaded_tfs if tf != exec_tf]
+        htf_default = htf_options.index("1h") if "1h" in htf_options else 0
         if htf_options:
             htf = st.selectbox(
                 "上位タイムフレーム",
                 options=htf_options,
-                index=0,
+                index=htf_default,
                 key="opt_htf",
                 help="トレンド判定に使用する上位タイムフレーム",
             )
@@ -830,6 +834,197 @@ def _run_optimization(
     st.rerun()
 
 
+def _render_regime_switching_section(result_set, viable_strategies):
+    """レジーム切替バックテスト（通しテスト）セクション"""
+    section_header("🔄", "レジーム切替テスト", "採用戦略を全期間で統合検証")
+
+    st.caption(
+        f"**{len(viable_strategies)}** レジームの採用戦略を使い、"
+        f"レジームに応じて戦略を自動切替する統合バックテスト"
+    )
+
+    # 採用戦略サマリー
+    cols = st.columns(len(viable_strategies))
+    for i, (regime, entry) in enumerate(viable_strategies.items()):
+        with cols[i]:
+            icon = REGIME_ICONS.get(regime, "")
+            label = REGIME_OPTIONS.get(regime, regime)
+            side_label = entry.config.get("side", "?")
+            pnl = entry.metrics.total_profit_pct
+            st.markdown(
+                f"**{icon} {label}**: {entry.template_name} "
+                f"({side_label}) / {pnl:+.1f}%"
+            )
+
+    # データソース選択
+    data_option = st.radio(
+        "テストデータ",
+        ["same", "original"],
+        format_func=lambda x: "最適化と同じデータ" if x == "same" else "全期間データ（original）",
+        horizontal=True,
+        key="rs_data_option",
+    )
+
+    if st.button("🔄 通しテスト実行", type="primary", use_container_width=True):
+        _run_regime_switching_test(
+            result_set, viable_strategies, use_original=(data_option == "original"),
+        )
+
+    # 結果表示
+    rs_result = st.session_state.get("regime_switching_result")
+    if rs_result is not None:
+        _render_regime_switching_results(rs_result, viable_strategies)
+
+
+def _run_regime_switching_test(result_set, viable_strategies, use_original=False):
+    """レジーム切替テストを実行"""
+    from optimizer.regime_switching import run_regime_switching_backtest
+
+    symbol = result_set.symbol
+    exec_tf = result_set.execution_tf
+    htf = result_set.htf
+
+    # --- OHLCVデータ取得 ---
+    ohlcv_dict = st.session_state.get("ohlcv_dict")
+
+    if use_original:
+        datasets = st.session_state.get("datasets", {})
+        if symbol in datasets and exec_tf in datasets[symbol]:
+            exec_df = datasets[symbol][exec_tf].df.copy()
+        else:
+            exec_df = _load_ohlcv_from_disk(symbol, exec_tf)
+            if exec_df is None:
+                st.error(f"データが見つかりません: {symbol} {exec_tf}")
+                return
+            exec_df = exec_df.copy()
+
+        # HTFデータも取得
+        htf_df = None
+        if htf:
+            if symbol in datasets and htf in datasets[symbol]:
+                htf_df = datasets[symbol][htf].df.copy()
+            else:
+                htf_raw = _load_ohlcv_from_disk(symbol, htf)
+                if htf_raw is not None:
+                    htf_df = htf_raw.copy()
+    else:
+        if ohlcv_dict is None or exec_tf not in ohlcv_dict:
+            st.error("最適化データが見つかりません。設定タブから最適化を実行してください。")
+            return
+        exec_df = ohlcv_dict[exec_tf].df.copy()
+        htf_df = None
+        if htf and htf in ohlcv_dict:
+            htf_df = ohlcv_dict[htf].df.copy()
+
+    # --- トレンドラベル付与 ---
+    if htf_df is not None:
+        detector = TrendDetector()
+        trend_method = st.session_state.get("opt_trend_method", "ma_cross")
+        ma_fast = st.session_state.get("opt_ma_fast", 20)
+        ma_slow = st.session_state.get("opt_ma_slow", 50)
+        adx_period = st.session_state.get("opt_adx_period", 14)
+        adx_trend_th = st.session_state.get("opt_adx_trend_th", 25.0)
+        adx_range_th = st.session_state.get("opt_adx_range_th", 20.0)
+
+        if trend_method == "ma_cross":
+            htf_df = detector.detect_ma_cross(htf_df, fast_period=ma_fast, slow_period=ma_slow)
+        elif trend_method == "adx":
+            htf_df = detector.detect_adx(
+                htf_df, adx_period=adx_period,
+                trend_threshold=adx_trend_th, range_threshold=adx_range_th,
+            )
+        else:
+            htf_df = detector.detect_combined(
+                htf_df, ma_fast=ma_fast, ma_slow=ma_slow,
+                adx_period=adx_period,
+                adx_trend_threshold=adx_trend_th,
+                adx_range_threshold=adx_range_th,
+            )
+        exec_df = TrendDetector.label_execution_tf(exec_df, htf_df)
+    else:
+        exec_df["trend_regime"] = TrendRegime.RANGE.value
+
+    # --- 実行 ---
+    commission = st.session_state.get("opt_commission", 0.04)
+    slippage = st.session_state.get("opt_slippage", 0.0)
+    capital = st.session_state.get("opt_initial_capital", 10000.0)
+
+    with st.spinner("レジーム切替テスト実行中..."):
+        rs_result = run_regime_switching_backtest(
+            df=exec_df,
+            regime_strategies=viable_strategies,
+            commission_pct=commission,
+            slippage_pct=slippage,
+            initial_capital=capital,
+        )
+
+    st.session_state.regime_switching_result = rs_result
+    st.success("通しテスト完了")
+
+
+def _render_regime_switching_results(rs_result, viable_strategies):
+    """レジーム切替テスト結果を表示"""
+    from ui.components.optimizer_charts import create_regime_switching_equity_chart
+
+    m = rs_result.overall_metrics
+
+    st.markdown("#### 統合バックテスト結果")
+
+    # 全体メトリクス
+    mc1, mc2, mc3, mc4, mc5, mc6 = st.columns(6)
+    mc1.metric("取引数", m.total_trades)
+    mc2.metric("勝率", f"{m.win_rate:.1f}%")
+    mc3.metric("損益比率", f"{m.profit_factor:.2f}")
+    mc4.metric("合計損益", f"{m.total_profit_pct:+.2f}%")
+    mc5.metric("最大DD", f"{m.max_drawdown_pct:.2f}%")
+    mc6.metric("シャープ", f"{m.sharpe_ratio:.2f}")
+
+    # 個別最適化合算 vs 統合テスト 比較
+    sum_pnl = sum(e.metrics.total_profit_pct for e in viable_strategies.values())
+    diff = m.total_profit_pct - sum_pnl
+    st.markdown(
+        f"個別最適化合算PnL: **{sum_pnl:+.2f}%** → "
+        f"統合テスト実績: **{m.total_profit_pct:+.2f}%** "
+        f"(差: {diff:+.2f}%)"
+    )
+
+    # レジーム別分解テーブル
+    st.markdown("#### レジーム別内訳")
+    regime_rows = []
+    for regime in ["uptrend", "downtrend", "range"]:
+        rm = rs_result.regime_metrics.get(regime)
+        tc = rs_result.regime_trade_counts.get(regime, 0)
+        if rm and tc > 0:
+            regime_rows.append({
+                "レジーム": f"{REGIME_ICONS.get(regime, '')} {REGIME_OPTIONS.get(regime, regime)}",
+                "取引数": tc,
+                "勝率": f"{rm.win_rate:.1f}%",
+                "合計損益": f"{rm.total_profit_pct:+.2f}%",
+                "損益比率": f"{rm.profit_factor:.2f}",
+                "最大DD": f"{rm.max_drawdown_pct:.2f}%",
+            })
+        else:
+            regime_rows.append({
+                "レジーム": f"{REGIME_ICONS.get(regime, '')} {REGIME_OPTIONS.get(regime, regime)}",
+                "取引数": 0,
+                "勝率": "-",
+                "合計損益": "-",
+                "損益比率": "-",
+                "最大DD": "-",
+            })
+
+    st.dataframe(
+        pd.DataFrame(regime_rows),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    # エクイティカーブ
+    if len(rs_result.equity_curve) > 1:
+        fig = create_regime_switching_equity_chart(rs_result.equity_curve)
+        st.plotly_chart(fig, use_container_width=True, key="rs_equity_chart")
+
+
 def _render_regime_best_summary(result_set):
     """レジーム別ベスト戦略サマリーを描画。採用可能な戦略のdictを返す。"""
     section_header("🏆", "Best per Regime", "レジーム別トップ戦略")
@@ -948,6 +1143,10 @@ def _render_results_view():
 
     # --- レジーム別ベスト戦略サマリー ---
     viable_strategies = _render_regime_best_summary(result_set)
+
+    # --- レジーム切替通しテスト ---
+    if len(viable_strategies) >= 2:
+        _render_regime_switching_section(result_set, viable_strategies)
 
     st.divider()
 
@@ -1742,7 +1941,7 @@ def _render_meta_analysis_view(comparison_results):
                 continue
 
             boxplot_fig = create_parameter_boxplot(comparison_results, regime, most_common_tpl)
-            st.plotly_chart(boxplot_fig, use_container_width=True)
+            st.plotly_chart(boxplot_fig, use_container_width=True, key=f"meta_boxplot_{regime}")
 
             # パラメータ別CV計算
             param_stats = {}

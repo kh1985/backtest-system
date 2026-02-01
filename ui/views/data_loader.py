@@ -18,6 +18,27 @@ from ui.components.chart import create_candlestick_chart
 TIMEFRAMES = ["1m", "5m", "15m", "1h", "4h", "1d"]
 
 
+def _detect_period_label(filename: str) -> str:
+    """ファイル名から期間ラベルを抽出する。
+
+    例:
+        ETHUSDT-15m-20250201-20260130-merged.csv → "20250201-20260130"
+        ETHUSDT-15m-1y-merged.csv                → "1y"
+        ETHUSDT-15m-2025-02.csv                  → "raw"
+    """
+    stem = Path(filename).stem
+    parts = stem.split("-")
+    # 新形式: SYMBOL-TF-YYYYMMDD-YYYYMMDD-merged
+    if (len(parts) >= 5 and parts[-1] == "merged"
+            and len(parts[2]) == 8 and parts[2].isdigit()
+            and len(parts[3]) == 8 and parts[3].isdigit()):
+        return f"{parts[2]}-{parts[3]}"
+    # 旧形式: SYMBOL-TF-LABEL-merged (e.g. 1y, prev1y)
+    if len(parts) >= 4 and parts[-1] == "merged":
+        return parts[2]
+    return "raw"
+
+
 def _add_to_datasets(ohlcv):
     """OHLCVDataを datasets に追加（シンボル別に蓄積）"""
     sym = getattr(ohlcv, "symbol", "UNKNOWN")
@@ -224,6 +245,13 @@ def _render_binance_tab():
         if p.exists() and p.is_dir():
             files = sorted(list(p.glob("*.csv")) + list(p.glob("*.zip")))
             if files:
+                # 期間ラベルを検出
+                period_labels = set()
+                for f in files:
+                    period_labels.add(_detect_period_label(f.name))
+                st.session_state.binance_scan_files = [str(f) for f in files]
+                st.session_state.binance_scan_periods = sorted(period_labels)
+                # デフォルトフィルタ適用してグループ化
                 groups = {}
                 for f in files:
                     sym = loader.detect_symbol(f.name)
@@ -243,6 +271,30 @@ def _render_binance_tab():
         accept_multiple_files=True,
         key="binance_multi_upload",
     )
+
+    # --- 期間フィルタ ---
+    scan_periods = st.session_state.get("binance_scan_periods", [])
+    scan_files = st.session_state.get("binance_scan_files", [])
+    if scan_periods and len(scan_periods) > 1:
+        selected_period = st.selectbox(
+            "期間フィルタ",
+            options=["すべて"] + scan_periods,
+            index=0,
+            key="binance_period_filter",
+            help="同じシンボル・TFで複数期間のデータがある場合、期間を選択して読み込み",
+        )
+        if selected_period != "すべて":
+            filtered = [
+                fp for fp in scan_files
+                if _detect_period_label(Path(fp).name) == selected_period
+            ]
+            groups = {}
+            for fp in filtered:
+                sym = loader.detect_symbol(Path(fp).name)
+                if sym not in groups:
+                    groups[sym] = []
+                groups[sym].append(fp)
+            st.session_state.binance_scan = groups
 
     # --- スキャン結果表示＆ロード ---
     scan = st.session_state.get("binance_scan")

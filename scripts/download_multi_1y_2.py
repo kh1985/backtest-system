@@ -134,7 +134,7 @@ def merge_zips(symbol, output_dir):
             print(f"    {tf}: No ZIPs found")
             continue
 
-        output_csv = BASE_DIR / f"{symbol}-{tf}-1y-merged.csv"
+        output_csv = BASE_DIR / f"{symbol}-{tf}-20250201-20260130-merged.csv"
         rows = []
 
         for zp in zips:
