@@ -474,6 +474,28 @@ class GridSearchOptimizer:
                 work_df = strategy.setup(df.copy())
                 precomputed[cache_key] = work_df
 
+        # VWAP exitが必要なconfigがあればVWAPを事前計算（1回だけ計算して全DFにマージ）
+        needs_vwap = any(
+            config_copy.get("exit", {}).get("use_vwap_exit", False)
+            for config_copy, _, _ in task_configs
+        )
+        if needs_vwap:
+            # 最初のDFでVWAPを計算
+            first_key = next(iter(precomputed))
+            first_df = precomputed[first_key]
+            if "vwap_upper1_active" not in first_df.columns:
+                if "volume" in first_df.columns and "datetime" in first_df.columns:
+                    vwap_indicator = VWAP(switch_hour=1)
+                    vwap_df = vwap_indicator.calculate(first_df.copy())
+                    # VWAPカラムを抽出
+                    vwap_cols = [c for c in vwap_df.columns if "vwap" in c]
+                    # 全precomputedにVWAPカラムをマージ
+                    for cache_key, work_df in precomputed.items():
+                        for col in vwap_cols:
+                            if col not in work_df.columns:
+                                work_df[col] = vwap_df[col].values
+                    logger.info(f"VWAP事前計算完了（{len(vwap_cols)}カラム）")
+
         logger.info(
             f"事前計算完了: {len(precomputed)} ユニークインジケーター設定"
         )
@@ -693,6 +715,9 @@ class GridSearchOptimizer:
             else:
                 # VWAPインジケーターが計算されていない場合は自動計算
                 if "volume" in work_df.columns and "datetime" in work_df.columns:
+                    # 共有メモリ復元時にdatetimeがfloat64になっている場合は変換
+                    if work_df["datetime"].dtype != "datetime64[ns]":
+                        work_df["datetime"] = pd.to_datetime(work_df["datetime"], unit="ns")
                     vwap_indicator = VWAP(switch_hour=1)  # UTC 1:00 = JST 10:00
                     work_df = vwap_indicator.calculate(work_df)
                     vwap_upper_arr = work_df[vwap_upper_col].fillna(0).values.astype(np.float64)
