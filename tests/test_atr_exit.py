@@ -221,6 +221,9 @@ class TestBacktestLoopATR:
             bb_upper=np.empty(0, dtype=np.float64),
             bb_lower=np.empty(0, dtype=np.float64),
             use_bb_exit=False,
+            vwap_upper=np.empty(0, dtype=np.float64),
+            vwap_lower=np.empty(0, dtype=np.float64),
+            use_vwap_exit=False,
         )
         assert len(profit_pcts) > 0
         assert len(equity) == len(profit_pcts) + 1
@@ -246,6 +249,9 @@ class TestBacktestLoopATR:
             bb_upper=np.empty(0, dtype=np.float64),
             bb_lower=np.empty(0, dtype=np.float64),
             use_bb_exit=False,
+            vwap_upper=np.empty(0, dtype=np.float64),
+            vwap_lower=np.empty(0, dtype=np.float64),
+            use_vwap_exit=False,
         )
         assert len(profit_pcts) > 0
 
@@ -272,6 +278,9 @@ class TestBacktestLoopATR:
             bb_upper=np.empty(0, dtype=np.float64),
             bb_lower=np.empty(0, dtype=np.float64),
             use_bb_exit=False,
+            vwap_upper=np.empty(0, dtype=np.float64),
+            vwap_lower=np.empty(0, dtype=np.float64),
+            use_vwap_exit=False,
         )
         assert len(profit_pcts) == 1
         assert durations[0] == 30  # タイムアウト

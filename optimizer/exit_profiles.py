@@ -5,12 +5,13 @@ Exit戦略プロファイル定義
 テンプレートの generate_configs() に渡すことで、
 エントリー条件 x exit条件 の直積でグリッドサーチを実行する。
 
-5つのモード:
+6つのモード:
 - fixed: 固定% TP/SL
 - atr: ATR倍率 TP/SL（ボラティリティ適応）
 - no_sl: SLなし（トレーリング + タイムアウトで利益延伸）
 - hybrid: トレーリング + SL のハイブリッド
 - bb: BB帯動的exit（ロング→上限バンド、ショート→下限バンドで決済）
+- vwap: VWAPバンド動的exit（active版バンドで日切替対応）
 """
 
 from typing import Any, Dict, List
@@ -115,9 +116,36 @@ BB_PROFILES: List[ExitProfile] = [
 ]
 
 
+# --- VWAPバンドexit（active版バンドで日切替対応） ---
+VWAP_PROFILES: List[ExitProfile] = [
+    {
+        "name": "vwap_exit_1sigma_sl1",
+        "use_vwap_exit": True,
+        "vwap_band": 1,  # ±1σ
+        "take_profit_pct": 0,
+        "stop_loss_pct": 1.0,
+    },
+    {
+        "name": "vwap_exit_2sigma_sl1",
+        "use_vwap_exit": True,
+        "vwap_band": 2,  # ±2σ
+        "take_profit_pct": 0,
+        "stop_loss_pct": 1.0,
+    },
+    {
+        "name": "vwap_exit_1sigma_atr_sl",
+        "use_vwap_exit": True,
+        "vwap_band": 1,
+        "use_atr_exit": True,
+        "atr_sl_mult": 1.5,
+        "atr_tp_mult": 0,
+        "atr_period": 14,
+    },
+]
+
 # 全プロファイル
 ALL_PROFILES: List[ExitProfile] = (
-    FIXED_PROFILES + ATR_PROFILES + NO_SL_PROFILES + HYBRID_PROFILES + BB_PROFILES
+    FIXED_PROFILES + ATR_PROFILES + NO_SL_PROFILES + HYBRID_PROFILES + BB_PROFILES + VWAP_PROFILES
 )
 
 
@@ -126,7 +154,7 @@ def get_profiles(mode: str = "all") -> List[ExitProfile]:
     指定モードの exit profiles を取得
 
     Args:
-        mode: "all", "fixed", "atr", "no_sl", "hybrid", "bb"
+        mode: "all", "fixed", "atr", "no_sl", "hybrid", "bb", "vwap"
 
     Returns:
         ExitProfile のリスト
@@ -137,6 +165,7 @@ def get_profiles(mode: str = "all") -> List[ExitProfile]:
         "no_sl": NO_SL_PROFILES,
         "hybrid": HYBRID_PROFILES,
         "bb": BB_PROFILES,
+        "vwap": VWAP_PROFILES,
         "all": ALL_PROFILES,
     }
     return modes.get(mode, ALL_PROFILES)

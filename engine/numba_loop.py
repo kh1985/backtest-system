@@ -84,6 +84,9 @@ def _backtest_loop(
     bb_upper: np.ndarray,
     bb_lower: np.ndarray,
     use_bb_exit: bool,
+    vwap_upper: np.ndarray,
+    vwap_lower: np.ndarray,
+    use_vwap_exit: bool,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Numba JIT コンパイルされたバックテストループ。
@@ -106,6 +109,9 @@ def _backtest_loop(
         bb_upper: BB上限バンド配列（BB exit時に使用。未使用時は長さ0の配列を渡す）
         bb_lower: BB下限バンド配列（BB exit時に使用。未使用時は長さ0の配列を渡す）
         use_bb_exit: True=BB帯で動的TP（ロング→上限、ショート→下限で決済）
+        vwap_upper: VWAP上限バンド配列（VWAP exit時に使用。未使用時は長さ0の配列を渡す）
+        vwap_lower: VWAP下限バンド配列（VWAP exit時に使用。未使用時は長さ0の配列を渡す）
+        use_vwap_exit: True=VWAPバンドで動的TP（ロング→上限、ショート→下限で決済）
 
     Returns:
         (profit_pcts, durations, equity_curve)
@@ -150,6 +156,17 @@ def _backtest_loop(
                     bb_val = bb_lower[i]
                     if bb_val > 0.0 and bb_val < 1e17:
                         tp_price = bb_val
+
+            # VWAP動的exit: 毎バーTP価格をVWAPバンドで更新
+            if use_vwap_exit and len(vwap_upper) > i:
+                if is_long:
+                    vwap_val = vwap_upper[i]
+                    if vwap_val > 0.0 and vwap_val < 1e17:
+                        tp_price = vwap_val
+                else:
+                    vwap_val = vwap_lower[i]
+                    if vwap_val > 0.0 and vwap_val < 1e17:
+                        tp_price = vwap_val
 
             # トレーリングストップ更新
             if trailing_pct > 0.0:
@@ -240,6 +257,17 @@ def _backtest_loop(
                     bb_val = bb_lower[i]
                     if bb_val > 0.0 and bb_val < 1e17:
                         tp_price = bb_val
+
+            # VWAP exit モード: 初期TPをVWAPバンドに設定（次バーから動的更新される）
+            if use_vwap_exit and len(vwap_upper) > i:
+                if is_long:
+                    vwap_val = vwap_upper[i]
+                    if vwap_val > 0.0 and vwap_val < 1e17:
+                        tp_price = vwap_val
+                else:
+                    vwap_val = vwap_lower[i]
+                    if vwap_val > 0.0 and vwap_val < 1e17:
+                        tp_price = vwap_val
 
             highest_price = entry_price
             lowest_price = entry_price

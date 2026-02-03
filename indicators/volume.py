@@ -86,13 +86,47 @@ class VWAP(Indicator):
             df["vwap_prev"]
         )
 
+        # 前日バンドを計算（各日の最終バンド値を翌日に引き継ぐ）
+        date_to_prev_upper1 = {}
+        date_to_prev_upper2 = {}
+        date_to_prev_lower1 = {}
+        date_to_prev_lower2 = {}
+        prev_upper1 = np.nan
+        prev_upper2 = np.nan
+        prev_lower1 = np.nan
+        prev_lower2 = np.nan
+        for d in sorted(unique_dates):
+            date_to_prev_upper1[d] = prev_upper1
+            date_to_prev_upper2[d] = prev_upper2
+            date_to_prev_lower1[d] = prev_lower1
+            date_to_prev_lower2[d] = prev_lower2
+            mask = date == d
+            if mask.any():
+                prev_upper1 = df.loc[mask, "vwap_upper1"].iloc[-1]
+                prev_upper2 = df.loc[mask, "vwap_upper2"].iloc[-1]
+                prev_lower1 = df.loc[mask, "vwap_lower1"].iloc[-1]
+                prev_lower2 = df.loc[mask, "vwap_lower2"].iloc[-1]
+
+        df["vwap_upper1_prev"] = date.map(date_to_prev_upper1)
+        df["vwap_upper2_prev"] = date.map(date_to_prev_upper2)
+        df["vwap_lower1_prev"] = date.map(date_to_prev_lower1)
+        df["vwap_lower2_prev"] = date.map(date_to_prev_lower2)
+
+        # active版バンド（時間帯に応じて自動切替）
+        df["vwap_upper1_active"] = np.where(use_current, df["vwap_upper1"], df["vwap_upper1_prev"])
+        df["vwap_upper2_active"] = np.where(use_current, df["vwap_upper2"], df["vwap_upper2_prev"])
+        df["vwap_lower1_active"] = np.where(use_current, df["vwap_lower1"], df["vwap_lower1_prev"])
+        df["vwap_lower2_active"] = np.where(use_current, df["vwap_lower2"], df["vwap_lower2_prev"])
+
         return df
 
     @property
     def columns(self) -> List[str]:
         return [
             "vwap", "vwap_prev", "vwap_active",
-            "vwap_std", "vwap_upper1", "vwap_upper2", "vwap_lower1", "vwap_lower2"
+            "vwap_std", "vwap_upper1", "vwap_upper2", "vwap_lower1", "vwap_lower2",
+            "vwap_upper1_prev", "vwap_upper2_prev", "vwap_lower1_prev", "vwap_lower2_prev",
+            "vwap_upper1_active", "vwap_upper2_active", "vwap_lower1_active", "vwap_lower2_active",
         ]
 
     @property

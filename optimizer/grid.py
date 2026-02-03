@@ -651,6 +651,10 @@ class GridSearchOptimizer:
         use_bb_exit = bool(exit_conf.get("use_bb_exit", False))
         bb_period = int(exit_conf.get("bb_period", 20))
 
+        # VWAPバンドexit設定
+        use_vwap_exit = bool(exit_conf.get("use_vwap_exit", False))
+        vwap_band = int(exit_conf.get("vwap_band", 1))  # 1 or 2 (±1σ or ±2σ)
+
         # ATR配列計算（全データで計算 → data_rangeと一緒にスライス）
         if use_atr_exit:
             atr_arr = compute_atr_numpy(high, low, close, period=atr_period)
@@ -674,6 +678,26 @@ class GridSearchOptimizer:
             bb_upper_arr = np.empty(0, dtype=np.float64)
             bb_lower_arr = np.empty(0, dtype=np.float64)
 
+        # VWAP配列計算（active版バンドを使用）
+        if use_vwap_exit:
+            if vwap_band == 2:
+                vwap_upper_col = "vwap_upper2_active"
+                vwap_lower_col = "vwap_lower2_active"
+            else:
+                vwap_upper_col = "vwap_upper1_active"
+                vwap_lower_col = "vwap_lower1_active"
+            if vwap_upper_col in work_df.columns and vwap_lower_col in work_df.columns:
+                vwap_upper_arr = work_df[vwap_upper_col].fillna(0).values.astype(np.float64)
+                vwap_lower_arr = work_df[vwap_lower_col].fillna(0).values.astype(np.float64)
+            else:
+                # VWAPインジケーターが計算されていない場合は無効化
+                vwap_upper_arr = np.empty(0, dtype=np.float64)
+                vwap_lower_arr = np.empty(0, dtype=np.float64)
+                use_vwap_exit = False
+        else:
+            vwap_upper_arr = np.empty(0, dtype=np.float64)
+            vwap_lower_arr = np.empty(0, dtype=np.float64)
+
         # data_range が指定されている場合、バックテスト範囲をスライス
         if data_range is not None:
             start, end = data_range
@@ -687,6 +711,9 @@ class GridSearchOptimizer:
             if use_bb_exit:
                 bb_upper_arr = bb_upper_arr[start:end]
                 bb_lower_arr = bb_lower_arr[start:end]
+            if use_vwap_exit:
+                vwap_upper_arr = vwap_upper_arr[start:end]
+                vwap_lower_arr = vwap_lower_arr[start:end]
 
         # Numba JIT ループ実行
         profit_pcts, durations, equity_curve = _backtest_loop(
@@ -698,6 +725,7 @@ class GridSearchOptimizer:
             self.initial_capital,
             atr_arr, use_atr_exit, atr_tp_mult, atr_sl_mult,
             bb_upper_arr, bb_lower_arr, use_bb_exit,
+            vwap_upper_arr, vwap_lower_arr, use_vwap_exit,
         )
 
         # メトリクス算出（numpy 配列版）

@@ -36,6 +36,8 @@ class ExitRule:
     atr_period: int = 14
     use_bb_exit: bool = False
     bb_period: int = 20
+    use_vwap_exit: bool = False
+    vwap_band: int = 1  # 1 or 2 (±1σ or ±2σ)
 
 
 class Strategy(ABC):
