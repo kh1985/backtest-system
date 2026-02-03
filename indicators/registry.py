@@ -7,7 +7,7 @@
 from typing import Dict, Type
 
 from .base import Indicator
-from .trend import SMA, EMA
+from .trend import SMA, EMA, ParabolicSAR
 from .momentum import RSI, MACD, Stochastic
 from .volatility import BollingerBands, ATR
 from .volume import VWAP, RelativeVolume, VolumeAnalysis
@@ -17,6 +17,7 @@ from .adx import ADX
 INDICATOR_REGISTRY: Dict[str, Type[Indicator]] = {
     "sma": SMA,
     "ema": EMA,
+    "sar": ParabolicSAR,
     "rsi": RSI,
     "macd": MACD,
     "stochastic": Stochastic,
@@ -32,6 +33,7 @@ INDICATOR_REGISTRY: Dict[str, Type[Indicator]] = {
 INDICATOR_INFO = {
     "sma": {"label": "SMA (単純移動平均)", "params": {"period": 20, "source": "close"}},
     "ema": {"label": "EMA (指数移動平均)", "params": {"period": 20, "source": "close"}},
+    "sar": {"label": "Parabolic SAR", "params": {"af_start": 0.02, "af_step": 0.02, "af_max": 0.2}},
     "rsi": {"label": "RSI", "params": {"period": 14}},
     "macd": {"label": "MACD", "params": {"fast": 12, "slow": 26, "signal": 9}},
     "stochastic": {"label": "Stochastic", "params": {"k_period": 14, "d_period": 3}},
