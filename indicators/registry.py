@@ -39,7 +39,7 @@ INDICATOR_INFO = {
     "stochastic": {"label": "Stochastic", "params": {"k_period": 14, "d_period": 3}},
     "bollinger": {"label": "Bollinger Bands", "params": {"period": 20, "std_dev": 2.0}},
     "atr": {"label": "ATR", "params": {"period": 14}},
-    "vwap": {"label": "VWAP", "params": {}},
+    "vwap": {"label": "VWAP", "params": {"switch_hour": 1}},
     "rvol": {"label": "RVOL (相対出来高)", "params": {"period": 20}},
     "volume_analysis": {"label": "Volume Analysis", "params": {}},
     "adx": {"label": "ADX (+DI/-DI)", "params": {"period": 14}},
