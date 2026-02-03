@@ -26,6 +26,7 @@ from engine.portfolio import Portfolio
 from engine.numba_loop import (
     _backtest_loop, vectorize_entry_signals, compute_atr_numpy, HAS_NUMBA,
 )
+from indicators.volume import VWAP
 from metrics.calculator import calculate_metrics, calculate_metrics_from_arrays
 from analysis.trend import TrendRegime
 from .scoring import ScoringWeights, calculate_composite_score
@@ -690,10 +691,17 @@ class GridSearchOptimizer:
                 vwap_upper_arr = work_df[vwap_upper_col].fillna(0).values.astype(np.float64)
                 vwap_lower_arr = work_df[vwap_lower_col].fillna(0).values.astype(np.float64)
             else:
-                # VWAPインジケーターが計算されていない場合は無効化
-                vwap_upper_arr = np.empty(0, dtype=np.float64)
-                vwap_lower_arr = np.empty(0, dtype=np.float64)
-                use_vwap_exit = False
+                # VWAPインジケーターが計算されていない場合は自動計算
+                if "volume" in work_df.columns and "datetime" in work_df.columns:
+                    vwap_indicator = VWAP(switch_hour=1)  # UTC 1:00 = JST 10:00
+                    work_df = vwap_indicator.calculate(work_df)
+                    vwap_upper_arr = work_df[vwap_upper_col].fillna(0).values.astype(np.float64)
+                    vwap_lower_arr = work_df[vwap_lower_col].fillna(0).values.astype(np.float64)
+                else:
+                    # volumeやdatetimeがない場合は無効化
+                    vwap_upper_arr = np.empty(0, dtype=np.float64)
+                    vwap_lower_arr = np.empty(0, dtype=np.float64)
+                    use_vwap_exit = False
         else:
             vwap_upper_arr = np.empty(0, dtype=np.float64)
             vwap_lower_arr = np.empty(0, dtype=np.float64)
