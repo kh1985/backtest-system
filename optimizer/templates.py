@@ -1,7 +1,13 @@
 """
 戦略テンプレート
 
-12種の組み込みテンプレート（ロング6種＋ショート6種）とパラメータ範囲定義。
+20種の組み込みテンプレート:
+- 基本テンプレート（ロング7種 + ショート7種 = 14種）
+- VWAP戦略（6種）:
+  - vwap_touch_long/short: VWAPタッチ（押し目/戻り）
+  - vwap_upper1_long / vwap_lower1_short: ±1σバンド順張り（トレンドフォロー）
+  - vwap_2sigma_long/short: ±2σバンド逆張り（レンジ向け）
+
 プレースホルダー {param} で変数パラメータを定義し、
 generate_configs() で全組み合わせ（直積）を自動生成。
 """
@@ -628,3 +634,174 @@ _register(StrategyTemplate(
         ParameterRange("sl_pct", 1.0, 2.0, 0.5, "float"),
     ],
 ))
+
+
+# =====================================================================
+# VWAP戦略（6パターン）
+# - VWAPタッチ: トレンド相場の押し目買い/戻り売り
+# - 1σバンド順張り: 強いトレンドで押し/戻りを待たずにエントリー
+# - 2σバンド逆張り: レンジ相場の逆張り
+# =====================================================================
+
+# 15. VWAP Touch Long（VWAPタッチでロング）
+_register(StrategyTemplate(
+    name="vwap_touch_long",
+    description="価格がVWAPラインに到達したらロング（トレンド押し目買い向け）",
+    config_template={
+        "name": "vwap_touch_long",
+        "side": "long",
+        "indicators": [
+            {"type": "vwap", "switch_hour": 1},
+        ],
+        "entry_conditions": [
+            {
+                "type": "column_compare",
+                "column_a": "close",
+                "operator": "<=",
+                "column_b": "vwap_active",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[],
+))
+
+# 16. VWAP Touch Short（VWAPタッチでショート）
+_register(StrategyTemplate(
+    name="vwap_touch_short",
+    description="価格がVWAPラインに到達したらショート（トレンド戻り売り向け）",
+    config_template={
+        "name": "vwap_touch_short",
+        "side": "short",
+        "indicators": [
+            {"type": "vwap", "switch_hour": 1},
+        ],
+        "entry_conditions": [
+            {
+                "type": "column_compare",
+                "column_a": "close",
+                "operator": ">=",
+                "column_b": "vwap_active",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[],
+))
+
+# 17. VWAP Upper 1σ Long（上限1σでロング - 上昇トレンド順張り）
+_register(StrategyTemplate(
+    name="vwap_upper1_long",
+    description="価格がVWAP+1σに到達したらロング（上昇トレンド順張り、押しを待たない）",
+    config_template={
+        "name": "vwap_upper1_long",
+        "side": "long",
+        "indicators": [
+            {"type": "vwap", "switch_hour": 1},
+        ],
+        "entry_conditions": [
+            {
+                "type": "column_compare",
+                "column_a": "close",
+                "operator": ">=",
+                "column_b": "vwap_upper1_active",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[],
+))
+
+# 18. VWAP Lower 1σ Short（下限1σでショート - 下落トレンド順張り）
+_register(StrategyTemplate(
+    name="vwap_lower1_short",
+    description="価格がVWAP-1σに到達したらショート（下落トレンド順張り、戻りを待たない）",
+    config_template={
+        "name": "vwap_lower1_short",
+        "side": "short",
+        "indicators": [
+            {"type": "vwap", "switch_hour": 1},
+        ],
+        "entry_conditions": [
+            {
+                "type": "column_compare",
+                "column_a": "close",
+                "operator": "<=",
+                "column_b": "vwap_lower1_active",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[],
+))
+
+# 19. VWAP 2σ Long（下限2σでロング）
+_register(StrategyTemplate(
+    name="vwap_2sigma_long",
+    description="価格がVWAP-2σバンドに到達したらロング（レンジ逆張り向け）",
+    config_template={
+        "name": "vwap_2sigma_long",
+        "side": "long",
+        "indicators": [
+            {"type": "vwap", "switch_hour": 1},
+        ],
+        "entry_conditions": [
+            {
+                "type": "column_compare",
+                "column_a": "close",
+                "operator": "<=",
+                "column_b": "vwap_lower2_active",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[],
+))
+
+# 20. VWAP 2σ Short（上限2σでショート）
+_register(StrategyTemplate(
+    name="vwap_2sigma_short",
+    description="価格がVWAP+2σバンドに到達したらショート（レンジ逆張り向け）",
+    config_template={
+        "name": "vwap_2sigma_short",
+        "side": "short",
+        "indicators": [
+            {"type": "vwap", "switch_hour": 1},
+        ],
+        "entry_conditions": [
+            {
+                "type": "column_compare",
+                "column_a": "close",
+                "operator": ">=",
+                "column_b": "vwap_upper2_active",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[],
+))
+

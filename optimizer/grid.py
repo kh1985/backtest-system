@@ -678,8 +678,13 @@ class GridSearchOptimizer:
         use_vwap_exit = bool(exit_conf.get("use_vwap_exit", False))
         vwap_band = int(exit_conf.get("vwap_band", 1))  # 1 or 2 (±1σ or ±2σ)
 
+        # ATRベーストレーリング設定
+        use_atr_trailing = bool(exit_conf.get("use_atr_trailing", False))
+        atr_trailing_mult = float(exit_conf.get("atr_trailing_mult", 0.0))
+
         # ATR配列計算（全データで計算 → data_rangeと一緒にスライス）
-        if use_atr_exit:
+        # ATRベースexit または ATRベーストレーリング使用時に計算
+        if use_atr_exit or use_atr_trailing:
             atr_arr = compute_atr_numpy(high, low, close, period=atr_period)
         else:
             atr_arr = np.empty(0, dtype=np.float64)
@@ -703,7 +708,11 @@ class GridSearchOptimizer:
 
         # VWAP配列計算（active版バンドを使用）
         if use_vwap_exit:
-            if vwap_band == 2:
+            if vwap_band == 0:
+                # VWAPライン自体をTPターゲット（ロング/ショート両方同じ）
+                vwap_upper_col = "vwap_active"
+                vwap_lower_col = "vwap_active"
+            elif vwap_band == 2:
                 vwap_upper_col = "vwap_upper2_active"
                 vwap_lower_col = "vwap_lower2_active"
             else:
@@ -739,7 +748,7 @@ class GridSearchOptimizer:
             close = close[start:end]
             entry_signals = entry_signals[start:end]
             regime_mask = regime_mask[start:end]
-            if use_atr_exit:
+            if use_atr_exit or use_atr_trailing:
                 atr_arr = atr_arr[start:end]
             if use_bb_exit:
                 bb_upper_arr = bb_upper_arr[start:end]
@@ -759,6 +768,7 @@ class GridSearchOptimizer:
             atr_arr, use_atr_exit, atr_tp_mult, atr_sl_mult,
             bb_upper_arr, bb_lower_arr, use_bb_exit,
             vwap_upper_arr, vwap_lower_arr, use_vwap_exit,
+            use_atr_trailing, atr_trailing_mult,
         )
 
         # メトリクス算出（numpy 配列版）

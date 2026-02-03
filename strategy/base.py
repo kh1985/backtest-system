@@ -30,14 +30,19 @@ class ExitRule:
     stop_loss_pct: float = 0.5
     trailing_stop_pct: Optional[float] = None
     timeout_bars: Optional[int] = None
+    # ATRベースexit
     use_atr_exit: bool = False
     atr_tp_mult: float = 0.0
     atr_sl_mult: float = 0.0
     atr_period: int = 14
+    # ATRベーストレーリング
+    use_atr_trailing: bool = False
+    atr_trailing_mult: float = 0.0
+    # VWAP/BB exit
     use_bb_exit: bool = False
     bb_period: int = 20
     use_vwap_exit: bool = False
-    vwap_band: int = 1  # 1 or 2 (±1σ or ±2σ)
+    vwap_band: int = 1  # 0=VWAPライン, 1=±1σ, 2=±2σ
 
 
 class Strategy(ABC):

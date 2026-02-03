@@ -195,10 +195,26 @@ def prepare_exec_df(
 
 def generate_all_configs(
     exit_profiles: Optional[List[Dict[str, Any]]] = None,
+    template_filter: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """全テンプレート x exit_profiles の config リストを生成"""
+    """全テンプレート x exit_profiles の config リストを生成
+
+    Args:
+        exit_profiles: Exit戦略プロファイル
+        template_filter: テンプレートフィルター（"vwap", "ma", "rsi"など。カンマ区切りで複数指定可）
+    """
     all_configs = []
+
+    # フィルター処理
+    filter_patterns = None
+    if template_filter:
+        filter_patterns = [p.strip().lower() for p in template_filter.split(",")]
+
     for tname, template in BUILTIN_TEMPLATES.items():
+        # フィルターが指定されている場合、マッチするテンプレートのみ
+        if filter_patterns:
+            if not any(p in tname.lower() for p in filter_patterns):
+                continue
         configs = template.generate_configs(exit_profiles=exit_profiles)
         all_configs.extend(configs)
     return all_configs
@@ -347,6 +363,7 @@ def run_all_optimizations(
     output_dir: Path,
     n_workers: int = N_WORKERS,
     force: bool = False,
+    template_filter: Optional[str] = None,
 ) -> Dict[tuple, Dict[str, Any]]:
     """
     全組み合わせの最適化を実行
@@ -357,7 +374,7 @@ def run_all_optimizations(
     opt_dir = output_dir / "optimization"
     opt_dir.mkdir(parents=True, exist_ok=True)
 
-    all_configs = generate_all_configs(exit_profiles)
+    all_configs = generate_all_configs(exit_profiles, template_filter)
     config_count = len(all_configs)
     logger.info(
         f"Config数: {config_count} "
@@ -1001,6 +1018,10 @@ def main():
         help="Exit profiles（all / fixed / atr / no_sl / hybrid / none）",
     )
     parser.add_argument(
+        "--templates", type=str, default="",
+        help="テンプレートフィルター（vwap, ma, rsi など。カンマ区切りで複数指定可）",
+    )
+    parser.add_argument(
         "--force", action="store_true",
         help="既存結果を上書き",
     )
@@ -1025,12 +1046,16 @@ def main():
     if args.exit_profiles != "none":
         exit_profiles = get_profiles(args.exit_profiles)
 
+    # Template filter
+    template_filter = args.templates if args.templates else None
+
     # 設定辞書
     config: Dict[str, Any] = {
         "tf_combos": tf_combos,
         "periods": periods,
         "use_oos": use_oos,
         "exit_mode": args.exit_profiles,
+        "template_filter": template_filter,
         "n_workers": args.workers,
         "trend_method": TREND_METHOD,
         "ma_fast": MA_FAST,
@@ -1048,6 +1073,8 @@ def main():
     )
     logger.info(f"期間: {', '.join(periods)}")
     logger.info(f"OOS: {'ON' if use_oos else 'OFF'}")
+    if template_filter:
+        logger.info(f"Templates: {template_filter}")
     logger.info(
         f"Exit profiles: {args.exit_profiles} "
         f"({len(exit_profiles) if exit_profiles else 0} 種)"
@@ -1102,6 +1129,7 @@ def main():
         output_dir=output_dir,
         n_workers=args.workers,
         force=args.force,
+        template_filter=template_filter,
     )
 
     phase1_time = time.time() - t0

@@ -32,11 +32,25 @@ class ConfigStrategy(Strategy):
     def __init__(self, config: Dict[str, Any]):
         self.name = config["name"]
         self.side = Side(config.get("side", "long"))
+        exit_conf = config.get("exit", {})
         self.exit_rule = ExitRule(
-            take_profit_pct=config["exit"]["take_profit_pct"],
-            stop_loss_pct=config["exit"]["stop_loss_pct"],
-            trailing_stop_pct=config["exit"].get("trailing_stop_pct"),
-            timeout_bars=config["exit"].get("timeout_bars"),
+            take_profit_pct=exit_conf.get("take_profit_pct", 0.0),
+            stop_loss_pct=exit_conf.get("stop_loss_pct", 0.0),
+            trailing_stop_pct=exit_conf.get("trailing_stop_pct"),
+            timeout_bars=exit_conf.get("timeout_bars"),
+            # ATRベースexit
+            use_atr_exit=exit_conf.get("use_atr_exit", False),
+            atr_tp_mult=exit_conf.get("atr_tp_mult", 0.0),
+            atr_sl_mult=exit_conf.get("atr_sl_mult", 0.0),
+            atr_period=exit_conf.get("atr_period", 14),
+            # ATRベーストレーリング
+            use_atr_trailing=exit_conf.get("use_atr_trailing", False),
+            atr_trailing_mult=exit_conf.get("atr_trailing_mult", 0.0),
+            # VWAP/BB exit
+            use_vwap_exit=exit_conf.get("use_vwap_exit", False),
+            vwap_band=exit_conf.get("vwap_band", 1),
+            use_bb_exit=exit_conf.get("use_bb_exit", False),
+            bb_period=exit_conf.get("bb_period", 20),
         )
         self._indicator_configs = [
             dict(ic) for ic in config.get("indicators", [])

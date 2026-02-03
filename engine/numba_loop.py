@@ -87,6 +87,8 @@ def _backtest_loop(
     vwap_upper: np.ndarray,
     vwap_lower: np.ndarray,
     use_vwap_exit: bool,
+    use_atr_trailing: bool,
+    atr_trailing_mult: float,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Numba JIT コンパイルされたバックテストループ。
@@ -97,7 +99,7 @@ def _backtest_loop(
         regime_mask: レジームフィルタ（bool配列、全True = フィルタなし）
         is_long: True=ロング、False=ショート
         tp_pct, sl_pct: TP/SLパーセンテージ（固定%モード）
-        trailing_pct: トレーリングストップ%（0.0=無効）
+        trailing_pct: トレーリングストップ%（0.0=無効、固定%モード）
         timeout_bars: タイムアウトバー数（0=無効）
         commission_pct: 手数料%
         slippage_pct: スリッページ%
@@ -112,6 +114,8 @@ def _backtest_loop(
         vwap_upper: VWAP上限バンド配列（VWAP exit時に使用。未使用時は長さ0の配列を渡す）
         vwap_lower: VWAP下限バンド配列（VWAP exit時に使用。未使用時は長さ0の配列を渡す）
         use_vwap_exit: True=VWAPバンドで動的TP（ロング→上限、ショート→下限で決済）
+        use_atr_trailing: True=ATRベースのトレーリングストップ幅を使用
+        atr_trailing_mult: ATRトレーリング倍率（use_atr_trailing=True時に使用）
 
     Returns:
         (profit_pcts, durations, equity_curve)
@@ -138,6 +142,7 @@ def _backtest_loop(
     sl_price = 0.0
     highest_price = 0.0
     lowest_price = 1e18
+    trailing_dist = 0.0  # ATRベーストレーリング用の絶対値幅
 
     for i in range(1, n):
         # === 決済判定 ===
@@ -168,18 +173,25 @@ def _backtest_loop(
                     if vwap_val > 0.0 and vwap_val < 1e17:
                         tp_price = vwap_val
 
-            # トレーリングストップ更新
-            if trailing_pct > 0.0:
+            # トレーリングストップ更新（固定%またはATRベース）
+            if trailing_pct > 0.0 or trailing_dist > 0.0:
                 if is_long:
                     if h > highest_price:
                         highest_price = h
-                    new_sl = highest_price * (1.0 - trailing_pct / 100.0)
+                    # ATRベースの場合は絶対値、固定%の場合は%で計算
+                    if trailing_dist > 0.0:
+                        new_sl = highest_price - trailing_dist
+                    else:
+                        new_sl = highest_price * (1.0 - trailing_pct / 100.0)
                     if new_sl > sl_price:
                         sl_price = new_sl
                 else:
                     if l < lowest_price:
                         lowest_price = l
-                    new_sl = lowest_price * (1.0 + trailing_pct / 100.0)
+                    if trailing_dist > 0.0:
+                        new_sl = lowest_price + trailing_dist
+                    else:
+                        new_sl = lowest_price * (1.0 + trailing_pct / 100.0)
                     if new_sl < sl_price:
                         sl_price = new_sl
 
@@ -238,14 +250,17 @@ def _backtest_loop(
 
             entry_idx = i
 
-            # ATR値取得（ATRモード時）
-            atr_val = atr[i] if use_atr_exit and len(atr) > i else 0.0
+            # ATR値取得（ATRベースexit/トレーリング時）
+            atr_val = atr[i] if (use_atr_exit or use_atr_trailing) and len(atr) > i else 0.0
 
             tp_price, sl_price = _compute_tp_sl(
                 entry_price, is_long,
                 tp_pct, sl_pct,
                 use_atr_exit, atr_val, atr_tp_mult, atr_sl_mult,
             )
+
+            # ATRベーストレーリング幅の計算
+            trailing_dist = atr_val * atr_trailing_mult if use_atr_trailing else 0.0
 
             # BB exit モード: 初期TPをBB帯に設定（次バーから動的更新される）
             if use_bb_exit and len(bb_upper) > i:

@@ -12,6 +12,7 @@ from .momentum import RSI, MACD, Stochastic
 from .volatility import BollingerBands, ATR
 from .volume import VWAP, RelativeVolume, VolumeAnalysis
 from .adx import ADX
+from .structure import SwingStructure, TrendStructure
 
 
 INDICATOR_REGISTRY: Dict[str, Type[Indicator]] = {
@@ -27,6 +28,8 @@ INDICATOR_REGISTRY: Dict[str, Type[Indicator]] = {
     "rvol": RelativeVolume,
     "volume_analysis": VolumeAnalysis,
     "adx": ADX,
+    "swing": SwingStructure,
+    "structure": TrendStructure,
 }
 
 # UI表示用の情報
@@ -43,6 +46,8 @@ INDICATOR_INFO = {
     "rvol": {"label": "RVOL (相対出来高)", "params": {"period": 20}},
     "volume_analysis": {"label": "Volume Analysis", "params": {}},
     "adx": {"label": "ADX (+DI/-DI)", "params": {"period": 14}},
+    "swing": {"label": "Swing Structure (HH/LL)", "params": {"min_swing_bars": 3, "atr_filter": 0.5}},
+    "structure": {"label": "Trend Structure (Breakout)", "params": {"lookback": 20}},
 }
 
 

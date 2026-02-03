@@ -224,6 +224,8 @@ class TestBacktestLoopATR:
             vwap_upper=np.empty(0, dtype=np.float64),
             vwap_lower=np.empty(0, dtype=np.float64),
             use_vwap_exit=False,
+            use_atr_trailing=False,
+            atr_trailing_mult=0.0,
         )
         assert len(profit_pcts) > 0
         assert len(equity) == len(profit_pcts) + 1
@@ -252,6 +254,8 @@ class TestBacktestLoopATR:
             vwap_upper=np.empty(0, dtype=np.float64),
             vwap_lower=np.empty(0, dtype=np.float64),
             use_vwap_exit=False,
+            use_atr_trailing=False,
+            atr_trailing_mult=0.0,
         )
         assert len(profit_pcts) > 0
 
@@ -281,6 +285,50 @@ class TestBacktestLoopATR:
             vwap_upper=np.empty(0, dtype=np.float64),
             vwap_lower=np.empty(0, dtype=np.float64),
             use_vwap_exit=False,
+            use_atr_trailing=False,
+            atr_trailing_mult=0.0,
         )
         assert len(profit_pcts) == 1
         assert durations[0] == 30  # タイムアウト
+
+    def test_atr_trailing_stop(self):
+        """ATRベーストレーリングストップのテスト"""
+        # 上昇トレンド → 反転するデータ
+        n = 100
+        close = np.zeros(n)
+        close[:50] = np.linspace(100, 110, 50)  # 上昇
+        close[50:] = np.linspace(110, 105, 50)  # 下落
+
+        high = close + 0.5
+        low = close - 0.5
+
+        # ATR計算
+        atr = compute_atr_numpy(high, low, close, period=14)
+
+        signals = np.zeros(n, dtype=np.bool_)
+        signals[20] = True  # 上昇途中でエントリー
+        mask = np.ones(n, dtype=np.bool_)
+
+        # ATRベーストレーリング: トレーリング幅 = ATR × 1.5
+        profit_pcts, durations, equity = _backtest_loop(
+            high, low, close, signals, mask,
+            is_long=True, tp_pct=0.0, sl_pct=0.0,
+            trailing_pct=0.0, timeout_bars=0,
+            commission_pct=0.04, slippage_pct=0.0,
+            initial_capital=10000.0,
+            atr=atr,
+            use_atr_exit=False,  # ATRベースSLは使わない
+            atr_tp_mult=0.0, atr_sl_mult=0.0,
+            bb_upper=np.empty(0, dtype=np.float64),
+            bb_lower=np.empty(0, dtype=np.float64),
+            use_bb_exit=False,
+            vwap_upper=np.empty(0, dtype=np.float64),
+            vwap_lower=np.empty(0, dtype=np.float64),
+            use_vwap_exit=False,
+            use_atr_trailing=True,  # ATRベーストレーリング有効
+            atr_trailing_mult=1.5,
+        )
+        # トレードが発生し、トレーリングで決済されること
+        assert len(profit_pcts) == 1
+        # 上昇してから反転で決済 → プラス収益
+        assert profit_pcts[0] > 0
