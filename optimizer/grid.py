@@ -10,6 +10,8 @@ import hashlib
 import json
 import logging
 import multiprocessing
+import multiprocessing.shared_memory as shm
+from collections import OrderedDict
 from concurrent.futures import ProcessPoolExecutor, as_completed, BrokenExecutor
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Any, Tuple
@@ -21,7 +23,9 @@ import numpy as np
 from strategy.builder import ConfigStrategy
 from engine.backtest import BacktestEngine, BacktestResult
 from engine.portfolio import Portfolio
-from engine.numba_loop import _backtest_loop, vectorize_entry_signals, HAS_NUMBA
+from engine.numba_loop import (
+    _backtest_loop, vectorize_entry_signals, compute_atr_numpy, HAS_NUMBA,
+)
 from metrics.calculator import calculate_metrics, calculate_metrics_from_arrays
 from analysis.trend import TrendRegime
 from .scoring import ScoringWeights, calculate_composite_score
@@ -52,25 +56,196 @@ class _BacktestTask:
     data_range: Optional[Tuple[int, int]] = None
 
 
-# ワーカープロセス内で保持する事前計算済みDataFrame
+# ---------------------------------------------------------------------------
+# 共有メモリ管理
+# ---------------------------------------------------------------------------
+
+# 文字列カラム → float エンコード用の固定マッピング
+_REGIME_ENCODE = {"uptrend": 1.0, "downtrend": -1.0, "range": 0.0}
+_REGIME_DECODE = {v: k for k, v in _REGIME_ENCODE.items()}
+
+
+def _encode_df_to_float(df: pd.DataFrame) -> Tuple[np.ndarray, List[str], Dict[str, Dict[str, float]]]:
+    """DataFrameを全float64のnumpy配列に変換。文字列列はfloatエンコード。"""
+    columns = list(df.columns)
+    str_mappings: Dict[str, Dict[str, float]] = {}
+
+    arrays = []
+    for col in columns:
+        series = df[col]
+        if series.dtype == object or str(series.dtype) == "object":
+            # 文字列カラム: 固定マッピングで変換
+            mapping = _REGIME_ENCODE
+            encoded = series.map(mapping).fillna(-999.0).values.astype(np.float64)
+            str_mappings[col] = mapping
+            arrays.append(encoded)
+        else:
+            arrays.append(series.values.astype(np.float64))
+
+    arr = np.column_stack(arrays) if arrays else np.empty((len(df), 0), dtype=np.float64)
+    return arr, columns, str_mappings
+
+
+def _decode_df_from_array(
+    arr: np.ndarray,
+    columns: List[str],
+    str_mappings: Dict[str, Dict[str, float]],
+) -> pd.DataFrame:
+    """numpy配列 + メタデータからDataFrameを復元。"""
+    df = pd.DataFrame(arr, columns=columns)
+    for col, mapping in str_mappings.items():
+        reverse = {v: k for k, v in mapping.items()}
+        df[col] = df[col].map(reverse)
+    return df
+
+
+@dataclass
+class _SharedDFMeta:
+    """SharedMemory上の1つのDataFrame情報（pickle可能）"""
+    shm_name: str
+    shape: Tuple[int, int]
+    columns: List[str]
+    str_mappings: Dict[str, Dict[str, float]]
+
+
+class SharedPrecomputedStore:
+    """precomputed辞書を共有メモリで管理するストア"""
+
+    def __init__(self):
+        self._blocks: List[shm.SharedMemory] = []
+        self.metadata: Dict[str, _SharedDFMeta] = {}
+
+    @classmethod
+    def create(cls, precomputed: Dict[str, pd.DataFrame]) -> "SharedPrecomputedStore":
+        """precomputed辞書からSharedMemoryを作成"""
+        store = cls()
+        for key, df in precomputed.items():
+            arr, columns, str_mappings = _encode_df_to_float(df)
+            arr = np.ascontiguousarray(arr)
+
+            block = shm.SharedMemory(create=True, size=arr.nbytes)
+            shared_arr = np.ndarray(arr.shape, dtype=np.float64, buffer=block.buf)
+            np.copyto(shared_arr, arr)
+
+            store._blocks.append(block)
+            store.metadata[key] = _SharedDFMeta(
+                shm_name=block.name,
+                shape=arr.shape,
+                columns=columns,
+                str_mappings=str_mappings,
+            )
+        return store
+
+    def cleanup(self):
+        """SharedMemoryの解放とアンリンク"""
+        for block in self._blocks:
+            try:
+                block.close()
+                block.unlink()
+            except Exception:
+                pass
+
+
+# ---------------------------------------------------------------------------
+# ワーカープロセス用グローバル変数・関数
+# ---------------------------------------------------------------------------
+
+# レガシー: pickle 直接渡し用（逐次実行フォールバック等）
 _worker_precomputed: Dict[str, pd.DataFrame] = {}
+
+# 共有メモリ用
+_worker_shm_blocks: List[shm.SharedMemory] = []
+_worker_shm_meta: Dict[str, _SharedDFMeta] = {}
+
+# ワーカー内キャッシュ（同一cache_key/configの再計算を回避）
+_worker_cached_df_key: str = ""
+_worker_cached_df: Optional[pd.DataFrame] = None
+_worker_cached_signals_key: str = ""
+_worker_cached_signals: Optional[np.ndarray] = None
 
 
 def _init_worker(precomputed: Dict[str, pd.DataFrame]):
-    """ワーカープロセスの初期化。事前計算済みDataFrameを受け取る。"""
+    """レガシー: 事前計算済みDataFrameをpickleで受け取る。"""
     global _worker_precomputed
     _worker_precomputed = precomputed
+
+
+def _init_worker_shared(metadata: Dict[str, _SharedDFMeta]):
+    """共有メモリ版ワーカー初期化。メタデータのみ受け取り、SharedMemoryにアタッチ。"""
+    global _worker_shm_blocks, _worker_shm_meta
+    global _worker_cached_df_key, _worker_cached_df
+    global _worker_cached_signals_key, _worker_cached_signals
+    _worker_shm_meta = metadata
+    _worker_shm_blocks = []
+    for meta in metadata.values():
+        block = shm.SharedMemory(name=meta.shm_name)
+        _worker_shm_blocks.append(block)
+    # ワーカー内キャッシュをリセット
+    _worker_cached_df_key = ""
+    _worker_cached_df = None
+    _worker_cached_signals_key = ""
+    _worker_cached_signals = None
+
+
+def _reconstruct_df(cache_key: str) -> pd.DataFrame:
+    """共有メモリからDataFrameを1つ復元（コピーあり = ワーカー専用メモリ）"""
+    meta = _worker_shm_meta[cache_key]
+    # アタッチ済みブロックから numpy view を取得
+    block = shm.SharedMemory(name=meta.shm_name)
+    shared_arr = np.ndarray(meta.shape, dtype=np.float64, buffer=block.buf)
+    # コピーしてワーカー独自メモリに配置（タスク完了後GC対象）
+    local_arr = shared_arr.copy()
+    block.close()  # view 不要になったらクローズ（unlink はしない）
+    return _decode_df_from_array(local_arr, meta.columns, meta.str_mappings)
+
+
+def _make_signals_key(cache_key: str, config: Dict[str, Any]) -> str:
+    """entry_signals キャッシュ用のキーを生成"""
+    entry_conds = config.get("entry_conditions", [])
+    entry_logic = config.get("entry_logic", "and")
+    raw = f"{cache_key}:{json.dumps(entry_conds, sort_keys=True)}:{entry_logic}"
+    return hashlib.md5(raw.encode()).hexdigest()
 
 
 def _run_single_task(task: _BacktestTask) -> Optional[OptimizationEntry]:
     """
     1つのバックテストタスクを実行するワーカー関数。
 
-    GridSearchOptimizer の軽量インスタンスを生成し、
-    事前計算済みDFをキャッシュに入れて _run_single() を呼ぶ。
+    共有メモリモード: _worker_shm_meta があれば共有メモリから復元。
+    レガシーモード: _worker_precomputed から直接取得。
+
+    ワーカー内キャッシュ:
+      - 同一 cache_key → DataFrame 復元をスキップ
+      - 同一 entry_conditions → entry_signals 計算をスキップ
     """
+    global _worker_cached_df_key, _worker_cached_df
+    global _worker_cached_signals_key, _worker_cached_signals
+
     try:
-        global _worker_precomputed
+        # --- DataFrame 取得（キャッシュ対応）---
+        if _worker_shm_meta:
+            if task.cache_key == _worker_cached_df_key and _worker_cached_df is not None:
+                work_df = _worker_cached_df
+            else:
+                work_df = _reconstruct_df(task.cache_key)
+                _worker_cached_df_key = task.cache_key
+                _worker_cached_df = work_df
+        else:
+            global _worker_precomputed
+            work_df = _worker_precomputed[task.cache_key]
+
+        # --- entry_signals 取得（キャッシュ対応）---
+        signals_key = _make_signals_key(task.cache_key, task.config)
+        if signals_key == _worker_cached_signals_key and _worker_cached_signals is not None:
+            entry_signals = _worker_cached_signals
+        else:
+            entry_signals = vectorize_entry_signals(
+                work_df,
+                task.config.get("entry_conditions", []),
+                task.config.get("entry_logic", "and"),
+            )
+            _worker_cached_signals_key = signals_key
+            _worker_cached_signals = entry_signals
 
         optimizer = GridSearchOptimizer(
             initial_capital=task.initial_capital,
@@ -79,19 +254,30 @@ def _run_single_task(task: _BacktestTask) -> Optional[OptimizationEntry]:
             scoring_weights=task.scoring_weights,
         )
 
-        # 事前計算済みDFをキャッシュに入れる（_run_single でキャッシュヒットする）
-        precomputed_df = _worker_precomputed[task.cache_key]
-        optimizer._indicator_cache.put(task.cache_key, precomputed_df)
-
-        entry = optimizer._run_single(
-            df=precomputed_df,  # キャッシュヒットするので df.copy() は不要
-            config=task.config,
-            template_name=task.template_name,
-            params=task.params,
-            target_regime=task.target_regime,
-            trend_column=task.trend_column,
-            data_range=task.data_range,
-        )
+        if _worker_shm_meta:
+            entry = optimizer._run_single(
+                df=work_df,
+                config=task.config,
+                template_name=task.template_name,
+                params=task.params,
+                target_regime=task.target_regime,
+                trend_column=task.trend_column,
+                data_range=task.data_range,
+                precomputed_work_df=work_df,
+                precomputed_entry_signals=entry_signals,
+            )
+        else:
+            optimizer._indicator_cache.put(task.cache_key, work_df)
+            entry = optimizer._run_single(
+                df=work_df,
+                config=task.config,
+                template_name=task.template_name,
+                params=task.params,
+                target_regime=task.target_regime,
+                trend_column=task.trend_column,
+                data_range=task.data_range,
+                precomputed_entry_signals=entry_signals,
+            )
 
         # メモリ削減: ワーカーからメインプロセスへの転送量を減らす
         if entry.backtest_result is not None:
@@ -105,14 +291,16 @@ def _run_single_task(task: _BacktestTask) -> Optional[OptimizationEntry]:
 
 class IndicatorCache:
     """
-    インジケーター計算結果のキャッシュ
+    インジケーター計算結果のキャッシュ（LRU制限付き）
 
     同じインジケーター設定は1回だけ計算し、結果を再利用。
     キーはインジケーター設定のMD5ハッシュ。
+    maxsize を超えると最も古いエントリーを削除。
     """
 
-    def __init__(self):
-        self._cache: Dict[str, pd.DataFrame] = {}
+    def __init__(self, maxsize: int = 64):
+        self._cache: OrderedDict[str, pd.DataFrame] = OrderedDict()
+        self._maxsize = maxsize
 
     def get_key(self, indicator_configs: List[Dict]) -> str:
         """インジケーター設定からキャッシュキーを生成"""
@@ -120,10 +308,17 @@ class IndicatorCache:
         return hashlib.md5(serialized.encode()).hexdigest()
 
     def get(self, key: str) -> Optional[pd.DataFrame]:
-        return self._cache.get(key)
+        if key in self._cache:
+            self._cache.move_to_end(key)
+            return self._cache[key]
+        return None
 
     def put(self, key: str, df: pd.DataFrame):
+        if key in self._cache:
+            self._cache.move_to_end(key)
         self._cache[key] = df
+        while len(self._cache) > self._maxsize:
+            self._cache.popitem(last=False)
 
     def clear(self):
         self._cache.clear()
@@ -306,18 +501,25 @@ class GridSearchOptimizer:
                 ))
                 task_id += 1
 
+        # タスクを cache_key でソート（ワーカー内キャッシュのヒット率向上）
+        tasks.sort(key=lambda t: t.cache_key)
+
         total = len(tasks)
         completed = 0
 
-        # Phase 4: ProcessPoolExecutor で並列実行
+        # Phase 4: 共有メモリに変換 → ProcessPoolExecutor で並列実行
         ctx = multiprocessing.get_context("spawn")
+        shared_store = SharedPrecomputedStore.create(precomputed)
+
+        # precomputed 辞書をメインプロセスから解放（共有メモリに移行済み）
+        del precomputed
 
         try:
             with ProcessPoolExecutor(
                 max_workers=n_workers,
                 mp_context=ctx,
-                initializer=_init_worker,
-                initargs=(precomputed,),
+                initializer=_init_worker_shared,
+                initargs=(shared_store.metadata,),
             ) as executor:
                 future_to_task = {
                     executor.submit(_run_single_task, task): task
@@ -341,6 +543,8 @@ class GridSearchOptimizer:
 
         except BrokenExecutor:
             logger.error("ワーカープロセスがクラッシュしました")
+        finally:
+            shared_store.cleanup()
 
         self._trim_results(result_set)
         return result_set
@@ -354,28 +558,43 @@ class GridSearchOptimizer:
         target_regime: str,
         trend_column: str,
         data_range: Optional[Tuple[int, int]] = None,
+        precomputed_work_df: Optional[pd.DataFrame] = None,
+        precomputed_entry_signals: Optional[np.ndarray] = None,
     ) -> OptimizationEntry:
-        """1つの組み合わせでバックテストを実行"""
+        """1つの組み合わせでバックテストを実行
+
+        Args:
+            precomputed_work_df: 共有メモリから復元済みのDF。指定時はキャッシュ/コピーをスキップ。
+            precomputed_entry_signals: 事前計算済みのentry_signals。指定時はvectorize_entry_signalsをスキップ。
+        """
         strategy = ConfigStrategy(config)
 
-        # インジケーター計算（キャッシュ利用）— 全データで計算
-        indicator_configs = config.get("indicators", [])
-        cache_key = self._indicator_cache.get_key(indicator_configs)
-        cached_df = self._indicator_cache.get(cache_key)
-
-        if cached_df is not None:
-            work_df = cached_df.copy()
+        if precomputed_work_df is not None:
+            # 共有メモリモード: 復元済みDFをそのまま使う（既にコピー済み）
+            work_df = precomputed_work_df
             strategy._entry_condition = strategy._build_condition(
                 config.get("entry_conditions", [])
             )
         else:
-            work_df = strategy.setup(df.copy())
-            self._indicator_cache.put(cache_key, work_df)
+            # 通常モード: キャッシュ利用 — 全データで計算
+            indicator_configs = config.get("indicators", [])
+            cache_key = self._indicator_cache.get_key(indicator_configs)
+            cached_df = self._indicator_cache.get(cache_key)
+
+            if cached_df is not None:
+                work_df = cached_df.copy()
+                strategy._entry_condition = strategy._build_condition(
+                    config.get("entry_conditions", [])
+                )
+            else:
+                work_df = strategy.setup(df.copy())
+                self._indicator_cache.put(cache_key, work_df)
 
         # --- Numba 高速パス ---
         return self._run_numba(
             work_df, config, strategy, template_name, params,
             target_regime, trend_column, data_range,
+            precomputed_entry_signals=precomputed_entry_signals,
         )
 
     def _run_numba(
@@ -388,14 +607,18 @@ class GridSearchOptimizer:
         target_regime: str,
         trend_column: str,
         data_range: Optional[Tuple[int, int]] = None,
+        precomputed_entry_signals: Optional[np.ndarray] = None,
     ) -> OptimizationEntry:
         """ベクトル化シグナル + Numba JIT ループでバックテスト"""
         # エントリーシグナルをベクトル演算で一括計算（全データで）
-        entry_signals = vectorize_entry_signals(
-            work_df,
-            config.get("entry_conditions", []),
-            config.get("entry_logic", "and"),
-        )
+        if precomputed_entry_signals is not None:
+            entry_signals = precomputed_entry_signals
+        else:
+            entry_signals = vectorize_entry_signals(
+                work_df,
+                config.get("entry_conditions", []),
+                config.get("entry_logic", "and"),
+            )
 
         # レジームマスク（全データで）
         if target_regime == "all":
@@ -411,6 +634,46 @@ class GridSearchOptimizer:
         low = work_df["low"].values.astype(np.float64)
         close = work_df["close"].values.astype(np.float64)
 
+        is_long = config.get("side", "long") == "long"
+        exit_conf = config.get("exit", {})
+        tp_pct = float(exit_conf.get("take_profit_pct", 2.0))
+        sl_pct = float(exit_conf.get("stop_loss_pct", 1.0))
+        trailing_pct = float(exit_conf.get("trailing_stop_pct", 0) or 0)
+        timeout_bars = int(exit_conf.get("timeout_bars", 0) or 0)
+
+        # ATRベースexit設定
+        use_atr_exit = bool(exit_conf.get("use_atr_exit", False))
+        atr_tp_mult = float(exit_conf.get("atr_tp_mult", 0.0))
+        atr_sl_mult = float(exit_conf.get("atr_sl_mult", 0.0))
+        atr_period = int(exit_conf.get("atr_period", 14))
+
+        # BB帯exit設定
+        use_bb_exit = bool(exit_conf.get("use_bb_exit", False))
+        bb_period = int(exit_conf.get("bb_period", 20))
+
+        # ATR配列計算（全データで計算 → data_rangeと一緒にスライス）
+        if use_atr_exit:
+            atr_arr = compute_atr_numpy(high, low, close, period=atr_period)
+        else:
+            atr_arr = np.empty(0, dtype=np.float64)
+
+        # BB配列計算（全データで計算 → data_rangeと一緒にスライス）
+        if use_bb_exit:
+            bb_upper_col = f"bb_upper_{bb_period}"
+            bb_lower_col = f"bb_lower_{bb_period}"
+            if bb_upper_col in work_df.columns and bb_lower_col in work_df.columns:
+                bb_upper_arr = work_df[bb_upper_col].fillna(0).values.astype(np.float64)
+                bb_lower_arr = work_df[bb_lower_col].fillna(0).values.astype(np.float64)
+            else:
+                # BB計算がまだの場合、ここで計算
+                sma = work_df["close"].rolling(window=bb_period).mean()
+                std = work_df["close"].rolling(window=bb_period).std()
+                bb_upper_arr = (sma + std * 2.0).fillna(0).values.astype(np.float64)
+                bb_lower_arr = (sma - std * 2.0).fillna(0).values.astype(np.float64)
+        else:
+            bb_upper_arr = np.empty(0, dtype=np.float64)
+            bb_lower_arr = np.empty(0, dtype=np.float64)
+
         # data_range が指定されている場合、バックテスト範囲をスライス
         if data_range is not None:
             start, end = data_range
@@ -419,13 +682,11 @@ class GridSearchOptimizer:
             close = close[start:end]
             entry_signals = entry_signals[start:end]
             regime_mask = regime_mask[start:end]
-
-        is_long = config.get("side", "long") == "long"
-        exit_conf = config.get("exit", {})
-        tp_pct = float(exit_conf.get("take_profit_pct", 2.0))
-        sl_pct = float(exit_conf.get("stop_loss_pct", 1.0))
-        trailing_pct = float(exit_conf.get("trailing_stop_pct", 0) or 0)
-        timeout_bars = int(exit_conf.get("timeout_bars", 0) or 0)
+            if use_atr_exit:
+                atr_arr = atr_arr[start:end]
+            if use_bb_exit:
+                bb_upper_arr = bb_upper_arr[start:end]
+                bb_lower_arr = bb_lower_arr[start:end]
 
         # Numba JIT ループ実行
         profit_pcts, durations, equity_curve = _backtest_loop(
@@ -435,6 +696,8 @@ class GridSearchOptimizer:
             trailing_pct, timeout_bars,
             self.commission_pct, self.slippage_pct,
             self.initial_capital,
+            atr_arr, use_atr_exit, atr_tp_mult, atr_sl_mult,
+            bb_upper_arr, bb_lower_arr, use_bb_exit,
         )
 
         # メトリクス算出（numpy 配列版）
@@ -475,8 +738,12 @@ class GridSearchOptimizer:
         )
 
     def _trim_results(self, result_set: OptimizationResultSet):
-        """上位N件以外のBacktestResultをクリア（メモリ節約）"""
+        """上位N件以外のBacktestResult・時系列データをクリア（メモリ節約）"""
         ranked = result_set.ranked()
         for i, entry in enumerate(ranked):
             if i >= self.top_n_results:
                 entry.backtest_result = None
+                # 時系列データもクリア（スカラーメトリクスは保持）
+                entry.metrics.equity_curve = []
+                entry.metrics.cumulative_returns = []
+                entry.metrics.drawdown_series = []

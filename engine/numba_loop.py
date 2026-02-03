@@ -28,6 +28,41 @@ except ImportError:
 
 
 @njit(cache=True)
+def _compute_tp_sl(
+    entry_price: float,
+    is_long: bool,
+    tp_pct: float,
+    sl_pct: float,
+    use_atr_exit: bool,
+    atr_val: float,
+    atr_tp_mult: float,
+    atr_sl_mult: float,
+) -> Tuple[float, float]:
+    """
+    TP/SL価格を計算するヘルパー。
+
+    ATRモード・固定%モード・SLなし（sl=0）を統一的に処理。
+    """
+    if use_atr_exit:
+        # ATRベースTP/SL
+        if is_long:
+            tp_price = (entry_price + atr_val * atr_tp_mult) if atr_tp_mult > 0.0 else 1e18
+            sl_price = (entry_price - atr_val * atr_sl_mult) if atr_sl_mult > 0.0 else -1.0
+        else:
+            tp_price = (entry_price - atr_val * atr_tp_mult) if atr_tp_mult > 0.0 else -1.0
+            sl_price = (entry_price + atr_val * atr_sl_mult) if atr_sl_mult > 0.0 else 1e18
+    else:
+        # 固定%モード（sl_pct=0 → SLなし対応）
+        if is_long:
+            tp_price = entry_price * (1.0 + tp_pct / 100.0) if tp_pct > 0.0 else 1e18
+            sl_price = entry_price * (1.0 - sl_pct / 100.0) if sl_pct > 0.0 else -1.0
+        else:
+            tp_price = entry_price * (1.0 - tp_pct / 100.0) if tp_pct > 0.0 else -1.0
+            sl_price = entry_price * (1.0 + sl_pct / 100.0) if sl_pct > 0.0 else 1e18
+    return tp_price, sl_price
+
+
+@njit(cache=True)
 def _backtest_loop(
     high: np.ndarray,
     low: np.ndarray,
@@ -42,6 +77,13 @@ def _backtest_loop(
     commission_pct: float,
     slippage_pct: float,
     initial_capital: float,
+    atr: np.ndarray,
+    use_atr_exit: bool,
+    atr_tp_mult: float,
+    atr_sl_mult: float,
+    bb_upper: np.ndarray,
+    bb_lower: np.ndarray,
+    use_bb_exit: bool,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Numba JIT コンパイルされたバックテストループ。
@@ -51,12 +93,19 @@ def _backtest_loop(
         entry_signals: エントリーシグナル（bool配列、事前にベクトル化済み）
         regime_mask: レジームフィルタ（bool配列、全True = フィルタなし）
         is_long: True=ロング、False=ショート
-        tp_pct, sl_pct: TP/SLパーセンテージ
+        tp_pct, sl_pct: TP/SLパーセンテージ（固定%モード）
         trailing_pct: トレーリングストップ%（0.0=無効）
         timeout_bars: タイムアウトバー数（0=無効）
         commission_pct: 手数料%
         slippage_pct: スリッページ%
         initial_capital: 初期資金
+        atr: ATR配列（ATRベースexit時に使用。未使用時は長さ0の配列を渡す）
+        use_atr_exit: ATRベースのTP/SL計算を使用
+        atr_tp_mult: ATR TP倍率（0.0=TP無効）
+        atr_sl_mult: ATR SL倍率（0.0=SL無効）
+        bb_upper: BB上限バンド配列（BB exit時に使用。未使用時は長さ0の配列を渡す）
+        bb_lower: BB下限バンド配列（BB exit時に使用。未使用時は長さ0の配列を渡す）
+        use_bb_exit: True=BB帯で動的TP（ロング→上限、ショート→下限で決済）
 
     Returns:
         (profit_pcts, durations, equity_curve)
@@ -90,6 +139,17 @@ def _backtest_loop(
             h = high[i]
             l = low[i]
             c = close[i]
+
+            # BB動的exit: 毎バーTP価格をBB帯で更新
+            if use_bb_exit and len(bb_upper) > i:
+                if is_long:
+                    bb_val = bb_upper[i]
+                    if bb_val > 0.0 and bb_val < 1e17:
+                        tp_price = bb_val
+                else:
+                    bb_val = bb_lower[i]
+                    if bb_val > 0.0 and bb_val < 1e17:
+                        tp_price = bb_val
 
             # トレーリングストップ更新
             if trailing_pct > 0.0:
@@ -161,12 +221,25 @@ def _backtest_loop(
 
             entry_idx = i
 
-            if is_long:
-                tp_price = entry_price * (1.0 + tp_pct / 100.0) if tp_pct > 0.0 else 1e18
-                sl_price = entry_price * (1.0 - sl_pct / 100.0)
-            else:
-                tp_price = entry_price * (1.0 - tp_pct / 100.0) if tp_pct > 0.0 else -1.0
-                sl_price = entry_price * (1.0 + sl_pct / 100.0)
+            # ATR値取得（ATRモード時）
+            atr_val = atr[i] if use_atr_exit and len(atr) > i else 0.0
+
+            tp_price, sl_price = _compute_tp_sl(
+                entry_price, is_long,
+                tp_pct, sl_pct,
+                use_atr_exit, atr_val, atr_tp_mult, atr_sl_mult,
+            )
+
+            # BB exit モード: 初期TPをBB帯に設定（次バーから動的更新される）
+            if use_bb_exit and len(bb_upper) > i:
+                if is_long:
+                    bb_val = bb_upper[i]
+                    if bb_val > 0.0 and bb_val < 1e17:
+                        tp_price = bb_val
+                else:
+                    bb_val = bb_lower[i]
+                    if bb_val > 0.0 and bb_val < 1e17:
+                        tp_price = bb_val
 
             highest_price = entry_price
             lowest_price = entry_price
@@ -212,6 +285,10 @@ def _backtest_loop_regime_switching(
     commission_pct: float,
     slippage_pct: float,
     initial_capital: float,
+    atr: np.ndarray,
+    use_atr_0: bool, use_atr_1: bool, use_atr_2: bool,
+    atr_tp_mult_0: float, atr_tp_mult_1: float, atr_tp_mult_2: float,
+    atr_sl_mult_0: float, atr_sl_mult_1: float, atr_sl_mult_2: float,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     レジーム切替バックテストループ。
@@ -313,6 +390,9 @@ def _backtest_loop_regime_switching(
                 cur_sl = sl_pct_0
                 cur_trail = trailing_pct_0
                 cur_tout = timeout_bars_0
+                cur_use_atr = use_atr_0
+                cur_atr_tp = atr_tp_mult_0
+                cur_atr_sl = atr_sl_mult_0
             elif r == 1:
                 signal = entry_signals_1[i]
                 cur_is_long = is_long_1
@@ -320,6 +400,9 @@ def _backtest_loop_regime_switching(
                 cur_sl = sl_pct_1
                 cur_trail = trailing_pct_1
                 cur_tout = timeout_bars_1
+                cur_use_atr = use_atr_1
+                cur_atr_tp = atr_tp_mult_1
+                cur_atr_sl = atr_sl_mult_1
             else:
                 signal = entry_signals_2[i]
                 cur_is_long = is_long_2
@@ -327,6 +410,9 @@ def _backtest_loop_regime_switching(
                 cur_sl = sl_pct_2
                 cur_trail = trailing_pct_2
                 cur_tout = timeout_bars_2
+                cur_use_atr = use_atr_2
+                cur_atr_tp = atr_tp_mult_2
+                cur_atr_sl = atr_sl_mult_2
 
             if signal:
                 entry_price = close[i]
@@ -341,12 +427,13 @@ def _backtest_loop_regime_switching(
                 pos_trailing_pct = cur_trail
                 pos_timeout_bars = cur_tout
 
-                if pos_is_long:
-                    tp_price = entry_price * (1.0 + cur_tp / 100.0) if cur_tp > 0.0 else 1e18
-                    sl_price = entry_price * (1.0 - cur_sl / 100.0)
-                else:
-                    tp_price = entry_price * (1.0 - cur_tp / 100.0) if cur_tp > 0.0 else -1.0
-                    sl_price = entry_price * (1.0 + cur_sl / 100.0)
+                atr_val = atr[i] if cur_use_atr and len(atr) > i else 0.0
+
+                tp_price, sl_price = _compute_tp_sl(
+                    entry_price, cur_is_long,
+                    cur_tp, cur_sl,
+                    cur_use_atr, atr_val, cur_atr_tp, cur_atr_sl,
+                )
 
                 highest_price = entry_price
                 lowest_price = entry_price
@@ -375,6 +462,41 @@ def _backtest_loop_regime_switching(
         equity_curve[:trade_count + 1],
         trade_regimes[:trade_count],
     )
+
+
+def compute_atr_numpy(
+    high: np.ndarray,
+    low: np.ndarray,
+    close: np.ndarray,
+    period: int = 14,
+) -> np.ndarray:
+    """
+    numpy配列からATRを計算。
+
+    Numbaループに渡す前にATR配列を事前計算するためのヘルパー。
+    インジケーターモジュールのATRクラスと同等の計算をnumpy純粋実装で行う。
+    """
+    n = len(high)
+    if n == 0:
+        return np.empty(0, dtype=np.float64)
+
+    # True Range
+    tr = np.empty(n, dtype=np.float64)
+    tr[0] = high[0] - low[0]
+    for i in range(1, n):
+        hl = high[i] - low[i]
+        hc = abs(high[i] - close[i - 1])
+        lc = abs(low[i] - close[i - 1])
+        tr[i] = max(hl, max(hc, lc))
+
+    # EWM (Exponential Weighted Mean)
+    alpha = 2.0 / (period + 1)
+    atr = np.empty(n, dtype=np.float64)
+    atr[0] = tr[0]
+    for i in range(1, n):
+        atr[i] = alpha * tr[i] + (1.0 - alpha) * atr[i - 1]
+
+    return atr
 
 
 def vectorize_entry_signals(

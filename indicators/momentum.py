@@ -71,14 +71,16 @@ class Stochastic(Indicator):
         self.name = "stoch"
 
     def calculate(self, df: pd.DataFrame) -> pd.DataFrame:
-        low_min = df["low"].rolling(window=self.k_period).min()
-        high_max = df["high"].rolling(window=self.k_period).max()
+        k = self.k_period
+        low_min = df["low"].rolling(window=k).min()
+        high_max = df["high"].rolling(window=k).max()
 
         denom = high_max - low_min
-        df["stoch_k"] = 100 * (df["close"] - low_min) / denom.replace(0, float("nan"))
-        df["stoch_d"] = df["stoch_k"].rolling(window=self.d_period).mean()
+        df[f"stoch_k_{k}"] = 100 * (df["close"] - low_min) / denom.replace(0, float("nan"))
+        df[f"stoch_d_{k}"] = df[f"stoch_k_{k}"].rolling(window=self.d_period).mean()
         return df
 
     @property
     def columns(self) -> List[str]:
-        return ["stoch_k", "stoch_d"]
+        k = self.k_period
+        return [f"stoch_k_{k}", f"stoch_d_{k}"]

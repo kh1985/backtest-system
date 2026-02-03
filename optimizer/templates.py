@@ -45,12 +45,16 @@ class StrategyTemplate:
     def generate_configs(
         self,
         custom_ranges: Optional[Dict[str, ParameterRange]] = None,
+        exit_profiles: Optional[List[Dict[str, Any]]] = None,
     ) -> List[Dict[str, Any]]:
         """
         パラメータ範囲の直積で全設定を生成
 
         Args:
             custom_ranges: カスタムパラメータ範囲（UI設定で上書き用）
+            exit_profiles: exit 戦略プロファイルのリスト。
+                指定時はエントリー条件 x exit条件 の直積を生成。
+                各プロファイルは {"name": "...", "take_profit_pct": ..., ...} 形式。
 
         Returns:
             ConfigStrategy用のconfig dictリスト
@@ -60,24 +64,39 @@ class StrategyTemplate:
             ranges.update(custom_ranges)
 
         if not ranges:
-            return [copy.deepcopy(self.config_template)]
+            entry_configs = [copy.deepcopy(self.config_template)]
+        else:
+            param_names = list(ranges.keys())
+            param_values = [ranges[n].values() for n in param_names]
 
-        param_names = list(ranges.keys())
-        param_values = [ranges[n].values() for n in param_names]
+            entry_configs = []
+            for combo in product(*param_values):
+                params = dict(zip(param_names, combo))
+                config = self._apply_params(params)
+                param_str = "_".join(f"{k}{v}" for k, v in params.items())
+                config["name"] = f"{self.name}_{param_str}"
+                config["_template_name"] = self.name
+                config["_params"] = dict(params)
+                entry_configs.append(config)
 
-        configs = []
-        for combo in product(*param_values):
-            params = dict(zip(param_names, combo))
-            config = self._apply_params(params)
-            # 名前にパラメータを含める
-            param_str = "_".join(f"{k}{v}" for k, v in params.items())
-            config["name"] = f"{self.name}_{param_str}"
-            # メタ情報を付加（GridSearchOptimizerが利用）
-            config["_template_name"] = self.name
-            config["_params"] = dict(params)
-            configs.append(config)
+        if not exit_profiles:
+            # exit_profiles 未指定 → 従来動作（テンプレート内蔵の exit を使用）
+            return entry_configs
 
-        return configs
+        # exit_profiles × entry_configs の直積
+        final_configs = []
+        for config in entry_configs:
+            for ep in exit_profiles:
+                c = copy.deepcopy(config)
+                # exit セクションをプロファイルで上書き
+                exit_conf = {k: v for k, v in ep.items() if k != "name"}
+                c["exit"] = exit_conf
+                c["_exit_profile"] = ep.get("name", "unknown")
+                # 名前にexit profileを含める
+                c["name"] = f"{config['name']}_{ep.get('name', '')}"
+                final_configs.append(c)
+
+        return final_configs
 
     def _apply_params(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """テンプレートのプレースホルダーをパラメータ値で置換"""

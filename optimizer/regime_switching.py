@@ -35,14 +35,18 @@ class RegimeSwitchingResult:
 
 
 def _extract_exit_params(config: dict):
-    """config から exit パラメータを抽出"""
+    """config から exit パラメータを抽出（ATR対応）"""
     is_long = config.get("side", "long") == "long"
     exit_conf = config.get("exit", {})
     tp = float(exit_conf.get("take_profit_pct", 2.0))
     sl = float(exit_conf.get("stop_loss_pct", 1.0))
     trail = float(exit_conf.get("trailing_stop_pct", 0) or 0)
     timeout = int(exit_conf.get("timeout_bars", 0) or 0)
-    return is_long, tp, sl, trail, timeout
+    use_atr = bool(exit_conf.get("use_atr_exit", False))
+    atr_tp_mult = float(exit_conf.get("atr_tp_mult", 0.0))
+    atr_sl_mult = float(exit_conf.get("atr_sl_mult", 0.0))
+    atr_period = int(exit_conf.get("atr_period", 14))
+    return is_long, tp, sl, trail, timeout, use_atr, atr_tp_mult, atr_sl_mult, atr_period
 
 
 def run_regime_switching_backtest(
@@ -71,6 +75,7 @@ def run_regime_switching_backtest(
     from engine.numba_loop import (
         vectorize_entry_signals,
         _backtest_loop_regime_switching,
+        compute_atr_numpy,
     )
 
     n = len(df)
@@ -114,7 +119,8 @@ def run_regime_switching_backtest(
     def _get_params(regime):
         c = configs.get(regime)
         if c is None:
-            return True, 0.0, 1.0, 0.0, 0
+            # is_long, tp, sl, trail, timeout, use_atr, atr_tp, atr_sl, atr_period
+            return True, 0.0, 1.0, 0.0, 0, False, 0.0, 0.0, 14
         return _extract_exit_params(c)
 
     p_up = _get_params("uptrend")
@@ -126,6 +132,14 @@ def run_regime_switching_backtest(
     low = df["low"].values.astype(np.float64)
     close = df["close"].values.astype(np.float64)
 
+    # --- ATR配列計算（いずれかのレジームがATRモードの場合） ---
+    any_atr = p_up[5] or p_down[5] or p_range[5]
+    if any_atr:
+        atr_period = max(p_up[8], p_down[8], p_range[8])
+        atr_arr = compute_atr_numpy(high, low, close, period=atr_period)
+    else:
+        atr_arr = np.empty(0, dtype=np.float64)
+
     # --- Numba 実行 ---
     profit_pcts, durations_arr, equity_curve, trade_regimes = (
         _backtest_loop_regime_switching(
@@ -134,12 +148,16 @@ def run_regime_switching_backtest(
             entry_signals["downtrend"],
             entry_signals["range"],
             regime_array,
-            p_up[0], p_down[0], p_range[0],
-            p_up[1], p_down[1], p_range[1],
-            p_up[2], p_down[2], p_range[2],
-            p_up[3], p_down[3], p_range[3],
-            p_up[4], p_down[4], p_range[4],
+            p_up[0], p_down[0], p_range[0],       # is_long
+            p_up[1], p_down[1], p_range[1],       # tp_pct
+            p_up[2], p_down[2], p_range[2],       # sl_pct
+            p_up[3], p_down[3], p_range[3],       # trailing_pct
+            p_up[4], p_down[4], p_range[4],       # timeout_bars
             commission_pct, slippage_pct, initial_capital,
+            atr_arr,
+            p_up[5], p_down[5], p_range[5],       # use_atr
+            p_up[6], p_down[6], p_range[6],       # atr_tp_mult
+            p_up[7], p_down[7], p_range[7],       # atr_sl_mult
         )
     )
 

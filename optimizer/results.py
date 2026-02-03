@@ -122,6 +122,16 @@ class OptimizationResultSet:
     def total_combinations(self) -> int:
         return len(self.entries)
 
+    def compact(self, keep_top_n: int = 20) -> None:
+        """上位N件以外の重いデータをクリア（session_state保存前等に使用）"""
+        ranked = self.ranked()
+        for i, entry in enumerate(ranked):
+            if i >= keep_top_n:
+                entry.backtest_result = None
+                entry.metrics.equity_curve = []
+                entry.metrics.cumulative_returns = []
+                entry.metrics.drawdown_series = []
+
     def rescore(self, weights=None) -> None:
         """全エントリーのスコアを再計算（読み込み済みデータに新しい重みを適用）"""
         from optimizer.scoring import calculate_composite_score

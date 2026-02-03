@@ -30,6 +30,12 @@ class ExitRule:
     stop_loss_pct: float = 0.5
     trailing_stop_pct: Optional[float] = None
     timeout_bars: Optional[int] = None
+    use_atr_exit: bool = False
+    atr_tp_mult: float = 0.0
+    atr_sl_mult: float = 0.0
+    atr_period: int = 14
+    use_bb_exit: bool = False
+    bb_period: int = 20
 
 
 class Strategy(ABC):

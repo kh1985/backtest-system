@@ -1,18 +1,32 @@
 """
-バッチ自動最適化スクリプト
+バッチ自動最適化スクリプト v2
 
-30銘柄×2期間（2024/2025）の全データに対し、
-14テンプレート×パラメータグリッドの自動最適化を実行。
-レジーム別の「コンセンサス戦略」を自動抽出し、
-クロスバリデーション（2024→2025）で過学習を検出する。
+全TF組み合わせ x 全銘柄 x 全期間 x 全exit戦略 を
+OOS 3分割検証付きで自動一括実行し、
+自動ランキング + Markdownレポートを生成する。
 
 使い方:
+    # フル実行（全TF x 全銘柄 x 全期間 x OOS x 全exit profiles）
     python scripts/batch_optimize.py
-    python scripts/batch_optimize.py --symbols BTCUSDT,ETHUSDT
-    python scripts/batch_optimize.py --periods 20250201-20260130
+
+    # 特定TFのみ
+    python scripts/batch_optimize.py --tf-combos 15m:1h,1h:4h
+
+    # OOSなし（高速テスト用）
+    python scripts/batch_optimize.py --no-oos
+
+    # 特定exit profileのみ
+    python scripts/batch_optimize.py --exit-profiles fixed
+
+    # 小規模テスト（2銘柄 x 1期間 x 1TF）
+    python scripts/batch_optimize.py --symbols BTCUSDT,ETHUSDT --periods 20250201-20260130 --tf-combos 15m:1h
+
+    # exit profiles なし（テンプレート内蔵のexitのみ）
+    python scripts/batch_optimize.py --exit-profiles none
 """
 
 import argparse
+import copy
 import json
 import logging
 import math
@@ -28,6 +42,8 @@ from typing import Any, Dict, List, Optional, Tuple
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_DIR))
 
+import pandas as pd
+
 from data.binance_loader import BinanceCSVLoader
 from data.base import OHLCVData
 from analysis.trend import TrendDetector, TrendRegime
@@ -35,14 +51,28 @@ from optimizer.grid import GridSearchOptimizer
 from optimizer.templates import BUILTIN_TEMPLATES
 from optimizer.results import OptimizationResultSet, OptimizationEntry
 from optimizer.scoring import ScoringWeights
+from optimizer.validation import (
+    DataSplitConfig,
+    ValidatedResultSet,
+    run_validated_optimization,
+)
+from optimizer.exit_profiles import get_profiles, ALL_PROFILES
 
 # =====================================================================
-# 設定（ここを変更して各種パラメータを調整）
+# 設定
 # =====================================================================
 
-EXEC_TF = "15m"
-HTF = "1h"
-TREND_METHOD = "ma_cross"  # "ma_cross", "adx", "combined"
+# TF組み合わせ（exec_tf, htf）
+TF_COMBOS = [
+    ("1m", "15m"),    # 超短期スキャル
+    ("1m", "1h"),     # 短期スキャル
+    ("15m", "1h"),    # 中期（標準）
+    ("15m", "4h"),    # 中期スイング
+    ("1h", "4h"),     # スイング
+    ("1h", "1d"),     # 長期スイング
+]
+
+TREND_METHOD = "ma_cross"
 MA_FAST = 20
 MA_SLOW = 50
 ADX_PERIOD = 14
@@ -57,11 +87,14 @@ TOP_N_RESULTS = 20
 
 TARGET_REGIMES = ["uptrend", "downtrend", "range"]
 
-# コンセンサス分析: 各レジームでTOP何位まで集計するか
-CONSENSUS_TOP_N = 5
+# OOS設定
+OOS_TRAIN_PCT = 0.6
+OOS_VAL_PCT = 0.2
+OOS_TOP_N_FOR_VAL = 10
 
-# クロスバリデーション: 各レジームでTOP何戦略を検証するか
-CV_TOP_N = 3
+# ランキング設定
+RANKING_MIN_SYMBOLS = 3
+RANKING_MIN_OOS_PASS_RATE = 0.5
 
 # データディレクトリ
 INPUTDATA_DIR = PROJECT_DIR / "inputdata"
@@ -69,8 +102,8 @@ RESULTS_DIR = PROJECT_DIR / "results" / "batch"
 
 # 期間定義
 PERIODS = [
-    "20240201-20250131",  # 2024期間
-    "20250201-20260130",  # 2025期間
+    "20240201-20250131",
+    "20250201-20260130",
 ]
 
 # =====================================================================
@@ -86,38 +119,37 @@ logger = logging.getLogger(__name__)
 
 
 def _safe_float(v: float) -> float:
-    """inf/nanをJSON安全な値に変換"""
     if math.isinf(v) or math.isnan(v):
         return 9999.0 if v > 0 else -9999.0 if v < 0 else 0.0
     return v
 
 
 # =====================================================================
-# データロード
+# データスキャン・ロード
 # =====================================================================
 
 def scan_available_data(
-    inputdata_dir: Path, exec_tf: str, htf: str, periods: List[str],
-) -> Dict[str, List[str]]:
+    inputdata_dir: Path,
+    tf_combos: List[Tuple[str, str]],
+    periods: List[str],
+) -> Dict[str, Dict[Tuple[str, str], List[str]]]:
     """
-    inputdata/ をスキャンし、利用可能な銘柄×期間の組み合わせを検出
+    利用可能な銘柄をスキャン
 
     Returns:
-        {period: [symbol, ...]} の辞書
+        {period: {(exec_tf, htf): [symbol, ...]}}
     """
     available = {}
     for period in periods:
-        symbols = set()
-        # exec_tf ファイルの存在チェック
-        for f in inputdata_dir.glob(f"*-{exec_tf}-{period}-merged.csv"):
-            symbol = f.name.split(f"-{exec_tf}")[0]
-            # htf ファイルも存在するか確認
-            htf_file = inputdata_dir / f"{symbol}-{htf}-{period}-merged.csv"
-            if htf_file.exists():
-                symbols.add(symbol)
-            else:
-                logger.warning(f"{symbol}: HTFファイルなし ({htf_file.name})")
-        available[period] = sorted(symbols)
+        available[period] = {}
+        for exec_tf, htf in tf_combos:
+            symbols = set()
+            for f in inputdata_dir.glob(f"*-{exec_tf}-{period}-merged.csv"):
+                symbol = f.name.split(f"-{exec_tf}")[0]
+                htf_file = inputdata_dir / f"{symbol}-{htf}-{period}-merged.csv"
+                if htf_file.exists():
+                    symbols.add(symbol)
+            available[period][(exec_tf, htf)] = sorted(symbols)
     return available
 
 
@@ -125,689 +157,926 @@ def load_symbol_data(
     symbol: str, period: str, exec_tf: str, htf: str,
     inputdata_dir: Path,
 ) -> Dict[str, OHLCVData]:
-    """1銘柄のexec_tf + htf データをロード"""
     loader = BinanceCSVLoader()
     tf_dict = {}
-
     exec_path = inputdata_dir / f"{symbol}-{exec_tf}-{period}-merged.csv"
     htf_path = inputdata_dir / f"{symbol}-{htf}-{period}-merged.csv"
-
     tf_dict[exec_tf] = loader.load(str(exec_path), symbol=symbol)
     tf_dict[htf] = loader.load(str(htf_path), symbol=symbol)
-
     return tf_dict
 
 
 # =====================================================================
-# 単一銘柄最適化（UIの _execute_single_optimization と同等ロジック）
+# 単一銘柄最適化
 # =====================================================================
 
-def optimize_single(
+def prepare_exec_df(
     tf_dict: Dict[str, OHLCVData],
     exec_tf: str,
     htf: str,
-    trend_method: str,
-    ma_fast: int,
-    ma_slow: int,
-    adx_period: int,
-    adx_trend_th: float,
-    adx_range_th: float,
-    target_regimes: List[str],
-    initial_capital: float,
-    commission_pct: float,
-    slippage_pct: float,
-    n_workers: int,
-    top_n_results: int,
-) -> OptimizationResultSet:
-    """
-    1銘柄分の全テンプレート×パラメータのグリッドサーチを実行
-
-    _execute_single_optimization() のStreamlit非依存版
-    """
+) -> pd.DataFrame:
+    """実行TFのDataFrameにトレンドラベルを付与"""
     exec_ohlcv = tf_dict[exec_tf]
     exec_df = exec_ohlcv.df.copy()
 
-    # トレンドラベル付与
     if htf and htf in tf_dict:
         htf_ohlcv = tf_dict[htf]
         htf_df = htf_ohlcv.df.copy()
-
         detector = TrendDetector()
-        if trend_method == "ma_cross":
-            htf_df = detector.detect_ma_cross(
-                htf_df, fast_period=ma_fast, slow_period=ma_slow
-            )
-        elif trend_method == "adx":
-            htf_df = detector.detect_adx(
-                htf_df, adx_period=adx_period,
-                trend_threshold=adx_trend_th,
-                range_threshold=adx_range_th,
-            )
-        else:  # combined
-            htf_df = detector.detect_combined(
-                htf_df, ma_fast=ma_fast, ma_slow=ma_slow,
-                adx_period=adx_period,
-                adx_trend_threshold=adx_trend_th,
-                adx_range_threshold=adx_range_th,
-            )
-
+        htf_df = detector.detect_ma_cross(
+            htf_df, fast_period=MA_FAST, slow_period=MA_SLOW
+        )
         exec_df = TrendDetector.label_execution_tf(exec_df, htf_df)
     else:
         exec_df["trend_regime"] = TrendRegime.RANGE.value
 
-    # 全テンプレートからconfig生成
+    return exec_df
+
+
+def generate_all_configs(
+    exit_profiles: Optional[List[Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
+    """全テンプレート x exit_profiles の config リストを生成"""
     all_configs = []
     for tname, template in BUILTIN_TEMPLATES.items():
-        configs = template.generate_configs()
+        configs = template.generate_configs(exit_profiles=exit_profiles)
         all_configs.extend(configs)
+    return all_configs
 
-    # グリッドサーチ実行
+
+def optimize_single(
+    exec_df: pd.DataFrame,
+    all_configs: List[Dict[str, Any]],
+    n_workers: int = N_WORKERS,
+) -> OptimizationResultSet:
+    """グリッドサーチのみ（OOSなし）"""
     optimizer = GridSearchOptimizer(
-        initial_capital=initial_capital,
-        commission_pct=commission_pct,
-        slippage_pct=slippage_pct,
-        top_n_results=top_n_results,
+        initial_capital=INITIAL_CAPITAL,
+        commission_pct=COMMISSION_PCT,
+        slippage_pct=SLIPPAGE_PCT,
+        top_n_results=TOP_N_RESULTS,
     )
-
+    configs = copy.deepcopy(all_configs)
     result_set = optimizer.run(
         df=exec_df,
-        configs=all_configs,
-        target_regimes=target_regimes,
+        configs=configs,
+        target_regimes=TARGET_REGIMES,
         n_workers=n_workers,
+        progress_callback=_log_progress,
     )
-
-    result_set.symbol = exec_ohlcv.symbol
-    result_set.execution_tf = exec_tf
-    result_set.htf = htf or ""
-
     return result_set
+
+
+def _log_progress(completed: int, total: int, desc: str) -> None:
+    """グリッドサーチの進捗をログ出力（10%刻み）"""
+    if total <= 0:
+        return
+    pct = completed * 100 // total
+    # 10%刻み or 最後に出力
+    if completed == total or (pct % 10 == 0 and (completed - 1) * 100 // total < pct):
+        logger.info(f"  進捗: {completed}/{total} ({pct}%) - {desc}")
+
+
+def optimize_single_oos(
+    exec_df: pd.DataFrame,
+    all_configs: List[Dict[str, Any]],
+    n_workers: int = N_WORKERS,
+) -> ValidatedResultSet:
+    """OOS 3分割検証付き最適化"""
+    optimizer = GridSearchOptimizer(
+        initial_capital=INITIAL_CAPITAL,
+        commission_pct=COMMISSION_PCT,
+        slippage_pct=SLIPPAGE_PCT,
+        top_n_results=TOP_N_RESULTS,
+    )
+    split_config = DataSplitConfig(
+        train_pct=OOS_TRAIN_PCT,
+        val_pct=OOS_VAL_PCT,
+        top_n_for_val=OOS_TOP_N_FOR_VAL,
+    )
+    configs = copy.deepcopy(all_configs)
+    validated = run_validated_optimization(
+        df=exec_df,
+        all_configs=configs,
+        target_regimes=TARGET_REGIMES,
+        split_config=split_config,
+        optimizer=optimizer,
+        n_workers=n_workers,
+        progress_callback=_log_progress,
+    )
+    return validated
 
 
 # =====================================================================
 # 結果保存
 # =====================================================================
 
-def save_optimization_result(
-    result_set: OptimizationResultSet,
+def _entry_to_dict(e: OptimizationEntry) -> Dict[str, Any]:
+    """OptimizationEntry を JSON 用辞書に変換"""
+    return {
+        "template": e.template_name,
+        "params": e.params,
+        "regime": e.trend_regime,
+        "exit_profile": e.config.get("_exit_profile", "default"),
+        "score": round(_safe_float(e.composite_score), 4),
+        "metrics": {
+            "trades": e.metrics.total_trades,
+            "win_rate": round(_safe_float(e.metrics.win_rate), 1),
+            "profit_factor": round(_safe_float(e.metrics.profit_factor), 2),
+            "total_pnl": round(_safe_float(e.metrics.total_profit_pct), 2),
+            "max_dd": round(_safe_float(e.metrics.max_drawdown_pct), 2),
+            "sharpe": round(_safe_float(e.metrics.sharpe_ratio), 2),
+        },
+    }
+
+
+def save_result(
+    result: Any,
     symbol: str,
     period: str,
+    exec_tf: str,
+    htf: str,
+    use_oos: bool,
     output_dir: Path,
 ) -> Path:
     """最適化結果をJSONで保存"""
-    json_rows = []
-    for e in result_set.ranked():
-        json_rows.append({
-            "template": e.template_name,
-            "params": e.params,
-            "regime": e.trend_regime,
-            "score": round(_safe_float(e.composite_score), 4),
-            "metrics": {
-                "trades": e.metrics.total_trades,
-                "win_rate": round(_safe_float(e.metrics.win_rate), 1),
-                "profit_factor": round(_safe_float(e.metrics.profit_factor), 2),
-                "total_pnl": round(_safe_float(e.metrics.total_profit_pct), 2),
-                "max_dd": round(_safe_float(e.metrics.max_drawdown_pct), 2),
-                "sharpe": round(_safe_float(e.metrics.sharpe_ratio), 2),
-            },
-            "config": e.config,
-        })
-
-    json_path = output_dir / f"{symbol}_{period}.json"
-    data = {
+    data: Dict[str, Any] = {
         "symbol": symbol,
         "period": period,
-        "execution_tf": result_set.execution_tf,
-        "htf": result_set.htf,
-        "total_combinations": result_set.total_combinations,
-        "results": json_rows,
+        "execution_tf": exec_tf,
+        "htf": htf,
+        "oos": use_oos,
     }
+
+    if use_oos and isinstance(result, ValidatedResultSet):
+        data["train_results"] = [
+            _entry_to_dict(e)
+            for e in result.train_results.ranked()[:TOP_N_RESULTS]
+        ]
+        data["test_results"] = {}
+        for regime, entry in result.test_results.items():
+            data["test_results"][regime] = _entry_to_dict(entry)
+        data["val_best"] = {}
+        for regime, entry in result.val_best.items():
+            data["val_best"][regime] = _entry_to_dict(entry)
+        data["warnings"] = result.overfitting_warnings
+        data["total_combinations"] = result.train_results.total_combinations
+    else:
+        result_set = result
+        data["total_combinations"] = result_set.total_combinations
+        data["results"] = [
+            _entry_to_dict(e)
+            for e in result_set.ranked()[:TOP_N_RESULTS]
+        ]
+
+    fname = f"{symbol}_{period}_{exec_tf}_{htf}.json"
+    json_path = output_dir / fname
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
-
     return json_path
 
 
 # =====================================================================
-# Phase 1: 全銘柄×全期間の最適化
+# Phase 1: 全銘柄 x 全TF x 全期間の最適化
 # =====================================================================
 
 def run_all_optimizations(
-    available: Dict[str, List[str]],
-    config: Dict[str, Any],
+    available: Dict[str, Dict[Tuple[str, str], List[str]]],
+    use_oos: bool,
+    exit_profiles: Optional[List[Dict[str, Any]]],
     output_dir: Path,
-) -> Dict[str, Dict[str, OptimizationResultSet]]:
+    n_workers: int = N_WORKERS,
+    force: bool = False,
+) -> Dict[tuple, Dict[str, Any]]:
     """
-    全銘柄×全期間の最適化を実行
+    全組み合わせの最適化を実行
 
     Returns:
-        {period: {symbol: OptimizationResultSet}}
+        {(period, exec_tf, htf, symbol): {"result": ..., "oos": bool}}
     """
     opt_dir = output_dir / "optimization"
     opt_dir.mkdir(parents=True, exist_ok=True)
 
-    all_results: Dict[str, Dict[str, OptimizationResultSet]] = {}
-    total_jobs = sum(len(syms) for syms in available.values())
+    all_configs = generate_all_configs(exit_profiles)
+    config_count = len(all_configs)
+    logger.info(
+        f"Config数: {config_count} "
+        f"({config_count * len(TARGET_REGIMES)} 組み合わせ/銘柄)"
+    )
+
+    all_results: Dict[tuple, Dict[str, Any]] = {}
+    total_jobs = sum(
+        len(symbols)
+        for period_data in available.values()
+        for symbols in period_data.values()
+    )
     current_job = 0
 
-    for period, symbols in available.items():
-        all_results[period] = {}
-        for symbol in symbols:
-            current_job += 1
+    for period in sorted(available.keys()):
+        for (exec_tf, htf), symbols in sorted(available[period].items()):
+            if not symbols:
+                continue
             logger.info(
-                f"[{current_job}/{total_jobs}] {symbol} ({period})"
+                f"\n--- {exec_tf}/{htf} | {period} ({len(symbols)} 銘柄) ---"
             )
 
-            # 既存結果があればスキップ
-            existing = opt_dir / f"{symbol}_{period}.json"
-            if existing.exists():
-                logger.info(f"  -> スキップ（既存結果あり）")
-                result_set = OptimizationResultSet.from_json(str(existing))
-                result_set.symbol = symbol
-                result_set.execution_tf = config["exec_tf"]
-                result_set.htf = config["htf"]
-                all_results[period][symbol] = result_set
-                continue
+            for symbol in symbols:
+                current_job += 1
+                key = (period, exec_tf, htf, symbol)
+                logger.info(f"[{current_job}/{total_jobs}] {symbol}")
 
-            try:
-                t0 = time.time()
-                tf_dict = load_symbol_data(
-                    symbol, period,
-                    config["exec_tf"], config["htf"],
-                    config["inputdata_dir"],
-                )
-                exec_bars = tf_dict[config["exec_tf"]].bars
-                htf_bars = tf_dict[config["htf"]].bars
-                logger.info(
-                    f"  データ: exec={exec_bars} bars, htf={htf_bars} bars"
-                )
+                # 既存結果チェック
+                fname = f"{symbol}_{period}_{exec_tf}_{htf}.json"
+                existing = opt_dir / fname
+                if existing.exists() and not force:
+                    logger.info("  -> スキップ（既存結果あり）")
+                    all_results[key] = {"file": str(existing), "oos": use_oos}
+                    continue
 
-                result_set = optimize_single(
-                    tf_dict=tf_dict,
-                    exec_tf=config["exec_tf"],
-                    htf=config["htf"],
-                    trend_method=config["trend_method"],
-                    ma_fast=config["ma_fast"],
-                    ma_slow=config["ma_slow"],
-                    adx_period=config["adx_period"],
-                    adx_trend_th=config["adx_trend_th"],
-                    adx_range_th=config["adx_range_th"],
-                    target_regimes=config["target_regimes"],
-                    initial_capital=config["initial_capital"],
-                    commission_pct=config["commission_pct"],
-                    slippage_pct=config["slippage_pct"],
-                    n_workers=config["n_workers"],
-                    top_n_results=config["top_n_results"],
-                )
+                try:
+                    t0 = time.time()
+                    tf_dict = load_symbol_data(
+                        symbol, period, exec_tf, htf, INPUTDATA_DIR,
+                    )
+                    exec_df = prepare_exec_df(tf_dict, exec_tf, htf)
+                    bars = len(exec_df)
+                    logger.info(f"  データ: {bars} bars")
 
-                elapsed = time.time() - t0
-                logger.info(
-                    f"  完了: {result_set.total_combinations} 組み合わせ "
-                    f"({elapsed:.1f}s)"
-                )
+                    if use_oos:
+                        result = optimize_single_oos(
+                            exec_df, all_configs, n_workers,
+                        )
+                        combos = result.train_results.total_combinations
+                    else:
+                        result = optimize_single(
+                            exec_df, all_configs, n_workers,
+                        )
+                        combos = result.total_combinations
 
-                save_optimization_result(result_set, symbol, period, opt_dir)
-                all_results[period][symbol] = result_set
+                    elapsed = time.time() - t0
+                    logger.info(
+                        f"  完了: {combos} 組み合わせ ({elapsed:.1f}s)"
+                    )
 
-            except Exception as e:
-                logger.error(f"  エラー: {e}")
-                continue
+                    save_result(
+                        result, symbol, period, exec_tf, htf,
+                        use_oos, opt_dir,
+                    )
+                    all_results[key] = {"result": result, "oos": use_oos}
+
+                except Exception as e:
+                    logger.error(f"  エラー: {e}")
+                    continue
 
     return all_results
 
 
 # =====================================================================
-# Phase 2: コンセンサス分析
+# Phase 2: 自動ランキング
 # =====================================================================
 
-def analyze_consensus(
-    all_results: Dict[str, Dict[str, OptimizationResultSet]],
-    top_n: int = CONSENSUS_TOP_N,
-) -> Dict[str, Any]:
+def _extract_oos_results(
+    all_results: Dict[tuple, Dict[str, Any]],
+) -> List[Dict[str, Any]]:
     """
-    レジーム別コンセンサス戦略を分析
-
-    各銘柄のレジーム別TOP-N戦略を集計し、
-    複数銘柄で共通して上位に来る戦略を抽出する。
+    全結果から OOS テスト結果（or Train ベスト）を抽出し、
+    ランキング用のフラットリストに変換
     """
-    consensus = {}
+    rows: List[Dict[str, Any]] = []
 
-    for regime in TARGET_REGIMES:
-        # strategy_key = (template, params_tuple) → 出現情報リスト
-        strategy_stats: Dict[Tuple, List[Dict]] = defaultdict(list)
-        template_counts: Dict[str, int] = defaultdict(int)
-        total_symbols = 0
+    for key, data in all_results.items():
+        period, exec_tf, htf, symbol = key
+        result = data.get("result")
+        is_oos = data.get("oos", False)
 
-        for period, symbol_results in all_results.items():
-            for symbol, result_set in symbol_results.items():
-                regime_set = result_set.filter_regime(regime)
-                ranked = regime_set.ranked()
-                if not ranked:
-                    continue
+        if result is None:
+            # ファイルのみ（analyze-only 用、未実装）
+            continue
 
-                total_symbols += 1
-
-                for i, entry in enumerate(ranked[:top_n]):
-                    params_tuple = tuple(sorted(entry.params.items()))
-                    key = (entry.template_name, params_tuple)
-
-                    strategy_stats[key].append({
-                        "symbol": symbol,
-                        "period": period,
-                        "rank": i + 1,
-                        "score": _safe_float(entry.composite_score),
-                        "pnl": _safe_float(entry.metrics.total_profit_pct),
-                        "win_rate": _safe_float(entry.metrics.win_rate),
-                        "profit_factor": _safe_float(entry.metrics.profit_factor),
-                        "sharpe": _safe_float(entry.metrics.sharpe_ratio),
-                        "trades": entry.metrics.total_trades,
-                    })
-
-                    template_counts[entry.template_name] += 1
-
-        # 出現頻度でソート
-        top_strategies = []
-        for (template, params_tuple), appearances in sorted(
-            strategy_stats.items(),
-            key=lambda x: len(x[1]),
-            reverse=True,
-        )[:20]:
-            params = dict(params_tuple)
-            symbols_seen = list(set(a["symbol"] for a in appearances))
-            pnls = [a["pnl"] for a in appearances]
-            scores = [a["score"] for a in appearances]
-            win_rates = [a["win_rate"] for a in appearances]
-            pfs = [a["profit_factor"] for a in appearances]
-
-            top_strategies.append({
-                "template": template,
-                "params": params,
-                "symbol_count": len(symbols_seen),
-                "appearance_count": len(appearances),
-                "appearance_rate": round(
-                    len(symbols_seen) / max(total_symbols, 1), 3
-                ),
-                "median_score": round(median(scores), 4) if scores else 0,
-                "median_pnl": round(median(pnls), 2) if pnls else 0,
-                "median_win_rate": round(
-                    median(win_rates), 1
-                ) if win_rates else 0,
-                "median_profit_factor": round(
-                    median(pfs), 2
-                ) if pfs else 0,
-                "symbols": symbols_seen,
-            })
-
-        # テンプレート頻度（正規化）
-        total_appearances = sum(template_counts.values()) or 1
-        template_freq = {
-            k: round(v / total_appearances, 3)
-            for k, v in sorted(
-                template_counts.items(), key=lambda x: -x[1]
-            )
-        }
-
-        consensus[regime] = {
-            "total_symbols_periods": total_symbols,
-            "top_strategies": top_strategies,
-            "template_frequency": template_freq,
-        }
-
-    return consensus
-
-
-# =====================================================================
-# Phase 3: クロスバリデーション
-# =====================================================================
-
-def cross_validate(
-    all_results: Dict[str, Dict[str, OptimizationResultSet]],
-    config: Dict[str, Any],
-    train_period: str = "20240201-20250131",
-    test_period: str = "20250201-20260130",
-    top_n: int = CV_TOP_N,
-) -> Dict[str, Any]:
-    """
-    2024期間のレジーム別ベスト戦略を2025データで検証
-
-    train_periodの各レジームTOP-N戦略を取得し、
-    test_periodの全銘柄で同じ戦略を個別実行して性能変化を比較。
-    """
-    if train_period not in all_results or test_period not in all_results:
-        logger.warning("クロスバリデーション: 両期間の結果が必要です")
-        return {}
-
-    train_results = all_results[train_period]
-    test_results = all_results[test_period]
-    cv_results = {}
-
-    for regime in TARGET_REGIMES:
-        # train期間で頻出するTOP戦略を特定
-        strategy_scores: Dict[Tuple, List[Dict]] = defaultdict(list)
-
-        for symbol, result_set in train_results.items():
-            regime_set = result_set.filter_regime(regime)
-            ranked = regime_set.ranked()
-            if not ranked:
-                continue
-            best = ranked[0]
-            params_tuple = tuple(sorted(best.params.items()))
-            key = (best.template_name, params_tuple)
-            strategy_scores[key].append({
-                "symbol": symbol,
-                "score": _safe_float(best.composite_score),
-                "pnl": _safe_float(best.metrics.total_profit_pct),
-                "win_rate": _safe_float(best.metrics.win_rate),
-                "profit_factor": _safe_float(best.metrics.profit_factor),
-                "sharpe": _safe_float(best.metrics.sharpe_ratio),
-            })
-
-        # 出現頻度上位N戦略
-        top_strategies = sorted(
-            strategy_scores.items(),
-            key=lambda x: len(x[1]),
-            reverse=True,
-        )[:top_n]
-
-        regime_cv = []
-        for (template_name, params_tuple), train_appearances in top_strategies:
-            params = dict(params_tuple)
-            logger.info(
-                f"  CV [{regime}] {template_name} "
-                f"{params} ({len(train_appearances)} symbols)"
-            )
-
-            # test_periodの全銘柄で同じ戦略の結果を探す
-            results_by_symbol = {}
-            train_syms = {a["symbol"] for a in train_appearances}
-
-            # train期間の結果
-            for appearance in train_appearances:
-                sym = appearance["symbol"]
-                results_by_symbol[sym] = {
-                    "train": {
-                        "pnl": round(_safe_float(appearance["pnl"]), 2),
-                        "win_rate": round(_safe_float(appearance["win_rate"]), 1),
-                        "pf": round(_safe_float(appearance["profit_factor"]), 2),
-                        "sharpe": round(_safe_float(appearance["sharpe"]), 2),
-                    }
-                }
-
-            # test期間: 同じ戦略のエントリーを探す
-            for sym, result_set in test_results.items():
-                if sym not in results_by_symbol:
-                    results_by_symbol[sym] = {}
-
-                regime_set = result_set.filter_regime(regime)
-                # 同じテンプレート+パラメータのエントリーを探す
-                match = None
-                for entry in regime_set.entries:
-                    entry_params = tuple(sorted(entry.params.items()))
-                    if (entry.template_name == template_name
-                            and entry_params == params_tuple):
-                        match = entry
+        if is_oos and isinstance(result, ValidatedResultSet):
+            # OOS結果: テスト通過した戦略
+            for regime, test_entry in result.test_results.items():
+                train_entry = None
+                for te in result.train_results.filter_regime(regime).entries:
+                    if (te.template_name == test_entry.template_name
+                            and te.params == test_entry.params):
+                        train_entry = te
                         break
 
-                if match:
-                    results_by_symbol[sym]["test"] = {
-                        "pnl": round(_safe_float(match.metrics.total_profit_pct), 2),
-                        "win_rate": round(_safe_float(match.metrics.win_rate), 1),
-                        "pf": round(_safe_float(match.metrics.profit_factor), 2),
-                        "sharpe": round(_safe_float(match.metrics.sharpe_ratio), 2),
-                    }
-
-            # サマリー計算（両期間にデータがある銘柄のみ）
-            both_count = 0
-            profitable_both = 0
-            pnl_decays = []
-
-            for sym, data in results_by_symbol.items():
-                if "train" in data and "test" in data:
-                    both_count += 1
-                    if data["train"]["pnl"] > 0 and data["test"]["pnl"] > 0:
-                        profitable_both += 1
-                    if data["train"]["pnl"] != 0:
-                        decay = (
-                            (data["test"]["pnl"] - data["train"]["pnl"])
-                            / abs(data["train"]["pnl"])
-                        )
-                        pnl_decays.append(decay)
-
-            regime_cv.append({
-                "template": template_name,
-                "params": params,
-                "train_period": train_period,
-                "test_period": test_period,
-                "train_symbol_count": len(train_appearances),
-                "results_by_symbol": results_by_symbol,
-                "summary": {
-                    "profitable_in_both": profitable_both,
-                    "total_symbols_with_both": both_count,
-                    "consistency_rate": round(
-                        profitable_both / max(both_count, 1), 3
+                rows.append({
+                    "period": period,
+                    "exec_tf": exec_tf,
+                    "htf": htf,
+                    "symbol": symbol,
+                    "regime": regime,
+                    "template": test_entry.template_name,
+                    "params": test_entry.params,
+                    "exit_profile": test_entry.config.get(
+                        "_exit_profile", "default"
                     ),
-                    "avg_pnl_decay": round(
-                        sum(pnl_decays) / max(len(pnl_decays), 1), 3
-                    ) if pnl_decays else None,
-                },
-            })
+                    "oos_pnl": _safe_float(
+                        test_entry.metrics.total_profit_pct
+                    ),
+                    "oos_trades": test_entry.metrics.total_trades,
+                    "oos_win_rate": _safe_float(test_entry.metrics.win_rate),
+                    "oos_sharpe": _safe_float(test_entry.metrics.sharpe_ratio),
+                    "oos_pf": _safe_float(
+                        test_entry.metrics.profit_factor
+                    ),
+                    "train_pnl": _safe_float(
+                        train_entry.metrics.total_profit_pct
+                    ) if train_entry else 0,
+                    "oos_pass": test_entry.metrics.total_profit_pct > 0,
+                    "data_source": "oos_test",
+                })
 
-        cv_results[regime] = regime_cv
+            # OOS テスト結果がないレジームの Train ベストも記録
+            for regime in TARGET_REGIMES:
+                if regime in result.test_results:
+                    continue
+                regime_set = result.train_results.filter_regime(regime)
+                if not regime_set.best:
+                    continue
+                best = regime_set.best
+                rows.append({
+                    "period": period,
+                    "exec_tf": exec_tf,
+                    "htf": htf,
+                    "symbol": symbol,
+                    "regime": regime,
+                    "template": best.template_name,
+                    "params": best.params,
+                    "exit_profile": best.config.get(
+                        "_exit_profile", "default"
+                    ),
+                    "oos_pnl": _safe_float(
+                        best.metrics.total_profit_pct
+                    ),
+                    "oos_trades": best.metrics.total_trades,
+                    "oos_win_rate": _safe_float(best.metrics.win_rate),
+                    "oos_sharpe": _safe_float(best.metrics.sharpe_ratio),
+                    "oos_pf": _safe_float(best.metrics.profit_factor),
+                    "train_pnl": _safe_float(
+                        best.metrics.total_profit_pct
+                    ),
+                    "oos_pass": False,
+                    "data_source": "train_only",
+                })
 
-    return cv_results
+        elif not is_oos and isinstance(result, OptimizationResultSet):
+            # Train 結果のみ（OOSなし）
+            for regime in TARGET_REGIMES:
+                regime_set = result.filter_regime(regime)
+                if not regime_set.best:
+                    continue
+                best = regime_set.best
+                rows.append({
+                    "period": period,
+                    "exec_tf": exec_tf,
+                    "htf": htf,
+                    "symbol": symbol,
+                    "regime": regime,
+                    "template": best.template_name,
+                    "params": best.params,
+                    "exit_profile": best.config.get(
+                        "_exit_profile", "default"
+                    ),
+                    "oos_pnl": _safe_float(
+                        best.metrics.total_profit_pct
+                    ),
+                    "oos_trades": best.metrics.total_trades,
+                    "oos_win_rate": _safe_float(best.metrics.win_rate),
+                    "oos_sharpe": _safe_float(best.metrics.sharpe_ratio),
+                    "oos_pf": _safe_float(best.metrics.profit_factor),
+                    "train_pnl": _safe_float(
+                        best.metrics.total_profit_pct
+                    ),
+                    "oos_pass": False,
+                    "data_source": "train_only",
+                })
+
+    return rows
+
+
+def auto_rank(
+    all_results: Dict[tuple, Dict[str, Any]],
+) -> Dict[str, Any]:
+    """
+    全結果を自動ランキング
+
+    戦略を (regime, template, exit_profile, exec_tf, htf) でグルーピングし、
+    以下のスコアでランキング:
+    - OOS通過率 x 0.4
+    - 平均OOS PnL（正規化） x 0.3
+    - 期間一貫性 x 0.2
+    - 銘柄カバー率 x 0.1
+    """
+    rows = _extract_oos_results(all_results)
+    if not rows:
+        return {
+            "strategies": [], "by_tf": {},
+            "by_exit": {}, "by_regime": {},
+        }
+
+    # --- 戦略グルーピング ---
+    groups: Dict[tuple, List[Dict]] = defaultdict(list)
+    for r in rows:
+        key = (
+            r["regime"], r["template"], r["exit_profile"],
+            r["exec_tf"], r["htf"],
+        )
+        groups[key].append(r)
+
+    # --- 全銘柄セット（カバー率計算用） ---
+    all_symbols = set()
+    for key in all_results:
+        all_symbols.add(key[3])
+
+    # --- 各グループのスコア計算 ---
+    strategies = []
+    for gkey, entries in groups.items():
+        regime, template, exit_profile, exec_tf, htf = gkey
+        n_symbols = len(set(e["symbol"] for e in entries))
+        n_entries = len(entries)
+
+        oos_passes = [e for e in entries if e["oos_pass"]]
+        oos_pass_rate = len(oos_passes) / max(n_entries, 1)
+
+        pnls = [e["oos_pnl"] for e in entries]
+        avg_pnl = sum(pnls) / max(len(pnls), 1)
+        med_pnl = median(pnls) if pnls else 0
+
+        # 期間一貫性
+        periods_seen = set(e["period"] for e in entries)
+        period_consistency = len(periods_seen) / max(len(PERIODS), 1)
+
+        # 両期間でプラスの銘柄数
+        symbol_period: Dict[str, Dict[str, float]] = defaultdict(dict)
+        for e in entries:
+            symbol_period[e["symbol"]][e["period"]] = e["oos_pnl"]
+
+        both_positive = 0
+        both_count = 0
+        for sym, period_pnl in symbol_period.items():
+            if len(period_pnl) >= 2:
+                both_count += 1
+                if all(p > 0 for p in period_pnl.values()):
+                    both_positive += 1
+
+        # 銘柄カバー率
+        symbol_coverage = n_symbols / max(len(all_symbols), 1)
+
+        # 総合スコア
+        score = (
+            oos_pass_rate * 0.4
+            + min(max(avg_pnl / 10.0, 0), 1.0) * 0.3
+            + period_consistency * 0.2
+            + symbol_coverage * 0.1
+        )
+
+        strategies.append({
+            "regime": regime,
+            "template": template,
+            "exit_profile": exit_profile,
+            "exec_tf": exec_tf,
+            "htf": htf,
+            "score": round(score, 4),
+            "oos_pass_rate": round(oos_pass_rate, 3),
+            "avg_pnl": round(avg_pnl, 2),
+            "median_pnl": round(med_pnl, 2),
+            "symbol_count": n_symbols,
+            "period_consistency": round(period_consistency, 2),
+            "both_periods_positive": both_positive,
+            "both_periods_count": both_count,
+            "entries": n_entries,
+        })
+
+    strategies.sort(key=lambda x: -x["score"])
+
+    # --- TF別集計 ---
+    by_tf: Dict[str, Dict[str, Any]] = defaultdict(
+        lambda: {"pass_rate": 0, "avg_pnl": 0.0, "count": 0}
+    )
+    for r in rows:
+        tf_key = f"{r['exec_tf']}/{r['htf']}"
+        by_tf[tf_key]["count"] += 1
+        by_tf[tf_key]["avg_pnl"] += r["oos_pnl"]
+        if r["oos_pass"]:
+            by_tf[tf_key]["pass_rate"] += 1
+
+    for tf_key in by_tf:
+        n = by_tf[tf_key]["count"]
+        by_tf[tf_key]["avg_pnl"] = round(
+            by_tf[tf_key]["avg_pnl"] / max(n, 1), 2
+        )
+        by_tf[tf_key]["pass_rate"] = round(
+            by_tf[tf_key]["pass_rate"] / max(n, 1), 3
+        )
+
+    # --- Exit profile別集計 ---
+    by_exit: Dict[str, Dict[str, Any]] = defaultdict(
+        lambda: {"pass_rate": 0, "avg_pnl": 0.0, "count": 0}
+    )
+    for r in rows:
+        ep = r["exit_profile"]
+        by_exit[ep]["count"] += 1
+        by_exit[ep]["avg_pnl"] += r["oos_pnl"]
+        if r["oos_pass"]:
+            by_exit[ep]["pass_rate"] += 1
+
+    for ep in by_exit:
+        n = by_exit[ep]["count"]
+        by_exit[ep]["avg_pnl"] = round(
+            by_exit[ep]["avg_pnl"] / max(n, 1), 2
+        )
+        by_exit[ep]["pass_rate"] = round(
+            by_exit[ep]["pass_rate"] / max(n, 1), 3
+        )
+
+    # --- レジーム別集計 ---
+    by_regime: Dict[str, Dict[str, Any]] = defaultdict(
+        lambda: {"pass_rate": 0, "avg_pnl": 0.0, "count": 0}
+    )
+    for r in rows:
+        regime = r["regime"]
+        by_regime[regime]["count"] += 1
+        by_regime[regime]["avg_pnl"] += r["oos_pnl"]
+        if r["oos_pass"]:
+            by_regime[regime]["pass_rate"] += 1
+
+    for regime in by_regime:
+        n = by_regime[regime]["count"]
+        by_regime[regime]["avg_pnl"] = round(
+            by_regime[regime]["avg_pnl"] / max(n, 1), 2
+        )
+        by_regime[regime]["pass_rate"] = round(
+            by_regime[regime]["pass_rate"] / max(n, 1), 3
+        )
+
+    return {
+        "strategies": strategies,
+        "by_tf": dict(by_tf),
+        "by_exit": dict(by_exit),
+        "by_regime": dict(by_regime),
+    }
 
 
 # =====================================================================
-# レポート生成
+# Phase 3: Markdown レポート生成
 # =====================================================================
 
 def generate_report(
-    all_results: Dict[str, Dict[str, OptimizationResultSet]],
-    consensus: Dict[str, Any],
-    cv_results: Dict[str, Any],
+    ranking: Dict[str, Any],
     config: Dict[str, Any],
     output_dir: Path,
-):
-    """最終レポートをJSON + テキストで出力"""
+    total_time: float,
+) -> Path:
+    """Markdown レポートを生成"""
+    lines: List[str] = []
 
-    # consensus.json
-    consensus_path = output_dir / "consensus.json"
-    # symbolsリストはJSONが大きくなるので省略版にする
-    consensus_compact = {}
-    for regime, data in consensus.items():
-        compact_strategies = []
-        for s in data["top_strategies"]:
-            s_copy = dict(s)
-            s_copy["symbols"] = s_copy["symbols"][:5]  # 先頭5のみ
-            if len(s["symbols"]) > 5:
-                s_copy["symbols_truncated"] = True
-            compact_strategies.append(s_copy)
-        consensus_compact[regime] = {
-            "total_symbols_periods": data["total_symbols_periods"],
-            "top_strategies": compact_strategies,
-            "template_frequency": data["template_frequency"],
-        }
-
-    with open(consensus_path, "w", encoding="utf-8") as f:
-        json.dump(consensus_compact, f, ensure_ascii=False, indent=2)
-    logger.info(f"コンセンサス分析保存: {consensus_path}")
-
-    # cross_validation.json
-    cv_path = output_dir / "cross_validation.json"
-    with open(cv_path, "w", encoding="utf-8") as f:
-        json.dump(cv_results, f, ensure_ascii=False, indent=2)
-    logger.info(f"クロスバリデーション保存: {cv_path}")
-
-    # config.json
-    config_path = output_dir / "config.json"
-    config_save = {k: v for k, v in config.items() if k != "inputdata_dir"}
-    config_save["inputdata_dir"] = str(config.get("inputdata_dir", ""))
-    with open(config_path, "w", encoding="utf-8") as f:
-        json.dump(config_save, f, ensure_ascii=False, indent=2)
-
-    # report.txt（テキストレポート）
-    report_path = output_dir / "report.txt"
-    lines = []
-    lines.append("=" * 70)
-    lines.append("  バッチ自動最適化レポート")
-    lines.append(f"  生成日時: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    lines.append("=" * 70)
+    lines.append("# バッチ自動最適化レポート")
     lines.append("")
-    lines.append(f"設定: exec_tf={config['exec_tf']}, htf={config['htf']}, "
-                 f"trend={config['trend_method']}, "
-                 f"MA {config['ma_fast']}/{config['ma_slow']}")
-    lines.append(f"対象期間: {', '.join(config['periods'])}")
+    lines.append(
+        f"生成日時: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    )
     lines.append("")
 
-    # 概要
-    for period in config["periods"]:
-        if period in all_results:
-            n_symbols = len(all_results[period])
-            total_combos = sum(
-                rs.total_combinations
-                for rs in all_results[period].values()
-            )
-            lines.append(
-                f"期間 {period}: {n_symbols} 銘柄, "
-                f"{total_combos} 組み合わせ"
-            )
+    # --- サマリー ---
+    lines.append("## サマリー")
+    lines.append("")
+    tf_combos = config.get("tf_combos", [])
+    periods = config.get("periods", [])
+    exit_mode = config.get("exit_mode", "all")
+    use_oos = config.get("use_oos", True)
+    lines.append(
+        f"- **TF組み合わせ**: {len(tf_combos)} "
+        f"({', '.join(f'{e}/{h}' for e, h in tf_combos)})"
+    )
+    lines.append(f"- **期間**: {', '.join(periods)}")
+    lines.append(f"- **Exit profiles**: {exit_mode}")
+    lines.append(
+        f"- **OOS検証**: "
+        f"{'ON (Train 60% / Val 20% / Test 20%)' if use_oos else 'OFF'}"
+    )
+    lines.append(
+        f"- **実行時間**: {total_time:.0f}s ({total_time / 60:.1f}min)"
+    )
     lines.append("")
 
-    # コンセンサス分析
-    lines.append("-" * 70)
-    lines.append("  コンセンサス戦略（レジーム別）")
-    lines.append("-" * 70)
+    strategies = ranking.get("strategies", [])
+    by_tf = ranking.get("by_tf", {})
+    by_exit = ranking.get("by_exit", {})
+    by_regime = ranking.get("by_regime", {})
 
-    for regime in TARGET_REGIMES:
-        if regime not in consensus:
-            continue
-        data = consensus[regime]
-        lines.append(f"\n  [{regime.upper()}]")
+    # --- 推奨戦略ランキング ---
+    lines.append("## 推奨戦略ランキング (Top 20)")
+    lines.append("")
+
+    recommended = [
+        s for s in strategies
+        if s["oos_pass_rate"] >= RANKING_MIN_OOS_PASS_RATE
+        and s["symbol_count"] >= RANKING_MIN_SYMBOLS
+    ]
+
+    if recommended:
         lines.append(
-            f"  テンプレート頻度: "
-            f"{', '.join(f'{k}={v:.0%}' for k, v in list(data['template_frequency'].items())[:5])}"
+            "| Rank | TF | Regime | Template | Exit | "
+            "OOS通過率 | 平均PnL | 銘柄数 | 期間一貫性 | Score |"
         )
+        lines.append(
+            "|------|------|--------|----------|------|"
+            "---------|---------|--------|----------|-------|"
+        )
+        for i, s in enumerate(recommended[:20]):
+            lines.append(
+                f"| {i + 1} | {s['exec_tf']}/{s['htf']} | "
+                f"{s['regime']} | {s['template']} | "
+                f"{s['exit_profile']} | {s['oos_pass_rate']:.0%} | "
+                f"{s['avg_pnl']:+.1f}% | {s['symbol_count']} | "
+                f"{s['period_consistency']:.0%} | {s['score']:.3f} |"
+            )
+        lines.append("")
+    else:
+        lines.append(
+            "(OOS通過率 >= 50% かつ 3銘柄以上の戦略なし)"
+        )
+        lines.append("")
 
-        for i, s in enumerate(data["top_strategies"][:5]):
-            param_str = ", ".join(f"{k}={v}" for k, v in s["params"].items())
-            lines.append(
-                f"  #{i+1} {s['template']} ({param_str})"
-            )
-            lines.append(
-                f"      出現: {s['symbol_count']}銘柄 "
-                f"({s['appearance_rate']:.0%}), "
-                f"PnL中央値={s['median_pnl']:.1f}%, "
-                f"WR={s['median_win_rate']:.0f}%, "
-                f"PF={s['median_profit_factor']:.2f}"
-            )
+    # --- Exit戦略比較 ---
+    lines.append("## Exit戦略比較")
     lines.append("")
+    if by_exit:
+        lines.append(
+            "| Exit Profile | OOS通過率 | 平均PnL | サンプル数 |"
+        )
+        lines.append(
+            "|-------------|---------|---------|----------|"
+        )
+        for ep, stats in sorted(
+            by_exit.items(), key=lambda x: -x[1]["pass_rate"]
+        ):
+            lines.append(
+                f"| {ep} | {stats['pass_rate']:.0%} | "
+                f"{stats['avg_pnl']:+.1f}% | {stats['count']} |"
+            )
+        lines.append("")
 
-    # クロスバリデーション
-    lines.append("-" * 70)
-    lines.append("  クロスバリデーション（2024 → 2025）")
-    lines.append("-" * 70)
+    # --- TF別比較 ---
+    lines.append("## タイムフレーム別比較")
+    lines.append("")
+    if by_tf:
+        lines.append("| TF | OOS通過率 | 平均PnL | サンプル数 |")
+        lines.append("|----|---------|---------|----------|")
+        for tf_key, stats in sorted(
+            by_tf.items(), key=lambda x: -x[1]["pass_rate"]
+        ):
+            lines.append(
+                f"| {tf_key} | {stats['pass_rate']:.0%} | "
+                f"{stats['avg_pnl']:+.1f}% | {stats['count']} |"
+            )
+        lines.append("")
 
+    # --- レジーム別比較 ---
+    lines.append("## レジーム別比較")
+    lines.append("")
+    if by_regime:
+        lines.append("| Regime | OOS通過率 | 平均PnL | サンプル数 |")
+        lines.append("|--------|---------|---------|----------|")
+        for regime, stats in sorted(
+            by_regime.items(), key=lambda x: -x[1]["pass_rate"]
+        ):
+            lines.append(
+                f"| {regime} | {stats['pass_rate']:.0%} | "
+                f"{stats['avg_pnl']:+.1f}% | {stats['count']} |"
+            )
+        lines.append("")
+
+    # --- レジーム別詳細 ---
     for regime in TARGET_REGIMES:
-        if regime not in cv_results:
+        regime_strategies = [
+            s for s in strategies if s["regime"] == regime
+        ]
+        if not regime_strategies:
             continue
-        lines.append(f"\n  [{regime.upper()}]")
-        for cv in cv_results[regime]:
-            param_str = ", ".join(
-                f"{k}={v}" for k, v in cv["params"].items()
-            )
-            summary = cv["summary"]
+
+        lines.append(f"### {regime.upper()}")
+        lines.append("")
+
+        top_regime = regime_strategies[:10]
+        lines.append(
+            "| Template | Exit | TF | OOS通過率 | "
+            "平均PnL | 中央PnL | 銘柄数 |"
+        )
+        lines.append(
+            "|----------|------|----|---------|"
+            "---------|---------|--------|"
+        )
+        for s in top_regime:
             lines.append(
-                f"  {cv['template']} ({param_str})"
+                f"| {s['template']} | {s['exit_profile']} | "
+                f"{s['exec_tf']}/{s['htf']} | "
+                f"{s['oos_pass_rate']:.0%} | "
+                f"{s['avg_pnl']:+.1f}% | "
+                f"{s['median_pnl']:+.1f}% | {s['symbol_count']} |"
             )
+        lines.append("")
+
+    # --- 過学習警告 ---
+    overfitting = [
+        s for s in strategies
+        if s["oos_pass_rate"] == 0 and s["entries"] >= 5
+    ]
+    if overfitting:
+        lines.append("## 過学習警告")
+        lines.append("")
+        lines.append(
+            "以下の戦略はOOS通過率0%（過学習の可能性大）:"
+        )
+        lines.append("")
+        for s in overfitting[:10]:
             lines.append(
-                f"      一貫性: {summary['profitable_in_both']}"
-                f"/{summary['total_symbols_with_both']} 銘柄 "
-                f"({summary['consistency_rate']:.0%})"
+                f"- {s['regime']} / {s['template']} / "
+                f"{s['exit_profile']} ({s['exec_tf']}/{s['htf']}): "
+                f"平均PnL {s['avg_pnl']:+.1f}%, {s['entries']}件"
             )
-            if summary["avg_pnl_decay"] is not None:
-                lines.append(
-                    f"      PnL変化率: {summary['avg_pnl_decay']:+.0%}"
-                )
-    lines.append("")
-    lines.append("=" * 70)
+        lines.append("")
+
+    # --- フッター ---
+    lines.append("---")
+    lines.append(
+        f"Generated by batch_optimize.py v2 | "
+        f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    )
 
     report_text = "\n".join(lines)
+
+    # Markdown保存
+    report_path = output_dir / "report.md"
     with open(report_path, "w", encoding="utf-8") as f:
         f.write(report_text)
     logger.info(f"レポート保存: {report_path}")
 
-    # コンソールにも出力
-    print(report_text)
+    # ランキングJSON保存
+    ranking_path = output_dir / "ranking.json"
+    with open(ranking_path, "w", encoding="utf-8") as f:
+        json.dump(ranking, f, ensure_ascii=False, indent=2)
+    logger.info(f"ランキング保存: {ranking_path}")
+
+    # config.json
+    config_path = output_dir / "config.json"
+    config_save: Dict[str, Any] = {}
+    for k, v in config.items():
+        if isinstance(v, Path):
+            config_save[k] = str(v)
+        elif isinstance(v, list) and v and isinstance(v[0], tuple):
+            config_save[k] = [list(t) for t in v]
+        else:
+            config_save[k] = v
+    with open(config_path, "w", encoding="utf-8") as f:
+        json.dump(config_save, f, ensure_ascii=False, indent=2)
+
+    # コンソールにもサマリー出力
+    print("\n" + "=" * 70)
+    print("  推奨戦略 Top 5")
+    print("=" * 70)
+    for i, s in enumerate(recommended[:5]):
+        print(
+            f"  #{i + 1} {s['exec_tf']}/{s['htf']} | {s['regime']} | "
+            f"{s['template']} | {s['exit_profile']} | "
+            f"OOS {s['oos_pass_rate']:.0%} | PnL {s['avg_pnl']:+.1f}%"
+        )
+    if not recommended:
+        print("  (推奨戦略なし)")
+    print("=" * 70)
+
+    return report_path
 
 
 # =====================================================================
 # メイン
 # =====================================================================
 
+def parse_tf_combos(arg: str) -> List[Tuple[str, str]]:
+    """TF組み合わせ文字列をパース"""
+    if arg == "all":
+        return list(TF_COMBOS)
+    combos = []
+    for item in arg.split(","):
+        parts = item.strip().split(":")
+        if len(parts) == 2:
+            combos.append((parts[0], parts[1]))
+    return combos
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="バッチ自動最適化スクリプト"
+        description="バッチ自動最適化スクリプト v2"
     )
     parser.add_argument(
         "--symbols", type=str, default="",
-        help="対象銘柄（カンマ区切り）。未指定で全銘柄",
+        help="対象銘柄（カンマ区切り）",
     )
     parser.add_argument(
         "--periods", type=str, default="",
-        help="対象期間（カンマ区切り）。未指定で全期間",
+        help="対象期間（カンマ区切り）",
+    )
+    parser.add_argument(
+        "--tf-combos", type=str, default="all",
+        help="TF組み合わせ（all or 15m:1h,1h:4h）",
     )
     parser.add_argument(
         "--workers", type=int, default=N_WORKERS,
         help=f"並列ワーカー数（デフォルト: {N_WORKERS}）",
     )
     parser.add_argument(
-        "--skip-cv", action="store_true",
-        help="クロスバリデーションをスキップ",
+        "--oos", action="store_true", default=True,
+        help="OOS 3分割検証を有効化（デフォルト: ON）",
+    )
+    parser.add_argument(
+        "--no-oos", action="store_true",
+        help="OOS検証なし",
+    )
+    parser.add_argument(
+        "--exit-profiles", type=str, default="all",
+        help="Exit profiles（all / fixed / atr / no_sl / hybrid / none）",
+    )
+    parser.add_argument(
+        "--force", action="store_true",
+        help="既存結果を上書き",
     )
     args = parser.parse_args()
 
-    # 設定辞書
-    config = {
-        "exec_tf": EXEC_TF,
-        "htf": HTF,
-        "trend_method": TREND_METHOD,
-        "ma_fast": MA_FAST,
-        "ma_slow": MA_SLOW,
-        "adx_period": ADX_PERIOD,
-        "adx_trend_th": ADX_TREND_TH,
-        "adx_range_th": ADX_RANGE_TH,
-        "target_regimes": TARGET_REGIMES,
-        "initial_capital": INITIAL_CAPITAL,
-        "commission_pct": COMMISSION_PCT,
-        "slippage_pct": SLIPPAGE_PCT,
-        "n_workers": args.workers,
-        "top_n_results": TOP_N_RESULTS,
-        "inputdata_dir": INPUTDATA_DIR,
-        "periods": PERIODS,
-    }
+    # OOS設定
+    use_oos = not args.no_oos
 
-    # 期間フィルタ
+    # TF組み合わせ
+    tf_combos = parse_tf_combos(args.tf_combos)
+    if not tf_combos:
+        logger.error("有効なTF組み合わせがありません")
+        sys.exit(1)
+
+    # 期間
     periods = PERIODS
     if args.periods:
         periods = [p.strip() for p in args.periods.split(",")]
-        config["periods"] = periods
 
-    # 利用可能データのスキャン
-    logger.info("データスキャン中...")
-    available = scan_available_data(
-        INPUTDATA_DIR, EXEC_TF, HTF, periods
+    # Exit profiles
+    exit_profiles: Optional[List[Dict[str, Any]]] = None
+    if args.exit_profiles != "none":
+        exit_profiles = get_profiles(args.exit_profiles)
+
+    # 設定辞書
+    config: Dict[str, Any] = {
+        "tf_combos": tf_combos,
+        "periods": periods,
+        "use_oos": use_oos,
+        "exit_mode": args.exit_profiles,
+        "n_workers": args.workers,
+        "trend_method": TREND_METHOD,
+        "ma_fast": MA_FAST,
+        "ma_slow": MA_SLOW,
+        "initial_capital": INITIAL_CAPITAL,
+        "commission_pct": COMMISSION_PCT,
+        "slippage_pct": SLIPPAGE_PCT,
+    }
+
+    logger.info("=" * 60)
+    logger.info("  バッチ自動最適化 v2")
+    logger.info("=" * 60)
+    logger.info(
+        f"TF: {', '.join(f'{e}/{h}' for e, h in tf_combos)}"
     )
+    logger.info(f"期間: {', '.join(periods)}")
+    logger.info(f"OOS: {'ON' if use_oos else 'OFF'}")
+    logger.info(
+        f"Exit profiles: {args.exit_profiles} "
+        f"({len(exit_profiles) if exit_profiles else 0} 種)"
+    )
+    logger.info(f"Workers: {args.workers}")
+
+    # データスキャン
+    logger.info("\nデータスキャン中...")
+    available = scan_available_data(INPUTDATA_DIR, tf_combos, periods)
 
     # 銘柄フィルタ
     if args.symbols:
         filter_syms = set(s.strip() for s in args.symbols.split(","))
         for period in available:
-            available[period] = [
-                s for s in available[period] if s in filter_syms
-            ]
+            for tf_key in available[period]:
+                available[period][tf_key] = [
+                    s for s in available[period][tf_key]
+                    if s in filter_syms
+                ]
 
-    total_jobs = sum(len(syms) for syms in available.values())
-    for period, symbols in available.items():
-        logger.info(f"  {period}: {len(symbols)} 銘柄")
+    # サマリー表示
+    total_jobs = 0
+    for period in sorted(available.keys()):
+        for (exec_tf, htf), symbols in sorted(available[period].items()):
+            n = len(symbols)
+            if n > 0:
+                logger.info(f"  {exec_tf}/{htf} | {period}: {n} 銘柄")
+            total_jobs += n
+
     logger.info(f"合計: {total_jobs} ジョブ")
 
     if total_jobs == 0:
@@ -820,52 +1089,51 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     logger.info(f"出力先: {output_dir}")
 
-    # Phase 1: 全銘柄最適化
-    logger.info("")
-    logger.info("=" * 50)
-    logger.info("  Phase 1: 全銘柄×全期間の最適化")
-    logger.info("=" * 50)
+    # Phase 1: 全最適化
+    logger.info("\n" + "=" * 60)
+    logger.info("  Phase 1: 全銘柄 x 全TF x 全期間の最適化")
+    logger.info("=" * 60)
     t0 = time.time()
 
-    all_results = run_all_optimizations(available, config, output_dir)
+    all_results = run_all_optimizations(
+        available=available,
+        use_oos=use_oos,
+        exit_profiles=exit_profiles,
+        output_dir=output_dir,
+        n_workers=args.workers,
+        force=args.force,
+    )
 
     phase1_time = time.time() - t0
-    logger.info(f"Phase 1 完了 ({phase1_time:.0f}s)")
+    logger.info(f"\nPhase 1 完了 ({phase1_time:.0f}s)")
 
-    # Phase 2: コンセンサス分析
-    logger.info("")
-    logger.info("=" * 50)
-    logger.info("  Phase 2: コンセンサス分析")
-    logger.info("=" * 50)
+    # Phase 2: 自動ランキング
+    logger.info("\n" + "=" * 60)
+    logger.info("  Phase 2: 自動ランキング")
+    logger.info("=" * 60)
 
-    consensus = analyze_consensus(all_results, top_n=CONSENSUS_TOP_N)
+    ranking = auto_rank(all_results)
 
-    # Phase 3: クロスバリデーション
-    cv_results = {}
-    if not args.skip_cv and len(periods) >= 2:
-        logger.info("")
-        logger.info("=" * 50)
-        logger.info("  Phase 3: クロスバリデーション")
-        logger.info("=" * 50)
+    n_strategies = len(ranking["strategies"])
+    n_recommended = len([
+        s for s in ranking["strategies"]
+        if s["oos_pass_rate"] >= RANKING_MIN_OOS_PASS_RATE
+        and s["symbol_count"] >= RANKING_MIN_SYMBOLS
+    ])
+    logger.info(f"戦略グループ: {n_strategies}")
+    logger.info(f"推奨戦略: {n_recommended}")
 
-        cv_results = cross_validate(
-            all_results, config,
-            train_period=periods[0],
-            test_period=periods[1],
-            top_n=CV_TOP_N,
-        )
-
-    # レポート生成
-    logger.info("")
-    logger.info("=" * 50)
-    logger.info("  レポート生成")
-    logger.info("=" * 50)
-
-    generate_report(all_results, consensus, cv_results, config, output_dir)
+    # Phase 3: レポート生成
+    logger.info("\n" + "=" * 60)
+    logger.info("  Phase 3: レポート生成")
+    logger.info("=" * 60)
 
     total_time = time.time() - t0
+    report_path = generate_report(ranking, config, output_dir, total_time)
+
     logger.info(f"\n全処理完了 ({total_time:.0f}s)")
     logger.info(f"結果: {output_dir}")
+    logger.info(f"レポート: {report_path}")
 
 
 if __name__ == "__main__":

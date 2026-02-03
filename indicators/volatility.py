@@ -18,18 +18,20 @@ class BollingerBands(Indicator):
         self.name = "bb"
 
     def calculate(self, df: pd.DataFrame) -> pd.DataFrame:
-        sma = df["close"].rolling(window=self.period).mean()
-        std = df["close"].rolling(window=self.period).std()
+        p = self.period
+        sma = df["close"].rolling(window=p).mean()
+        std = df["close"].rolling(window=p).std()
 
-        df["bb_upper"] = sma + (std * self.std_dev)
-        df["bb_middle"] = sma
-        df["bb_lower"] = sma - (std * self.std_dev)
-        df["bb_width"] = (df["bb_upper"] - df["bb_lower"]) / df["bb_middle"]
+        df[f"bb_upper_{p}"] = sma + (std * self.std_dev)
+        df[f"bb_middle_{p}"] = sma
+        df[f"bb_lower_{p}"] = sma - (std * self.std_dev)
+        df[f"bb_width_{p}"] = (df[f"bb_upper_{p}"] - df[f"bb_lower_{p}"]) / df[f"bb_middle_{p}"]
         return df
 
     @property
     def columns(self) -> List[str]:
-        return ["bb_upper", "bb_middle", "bb_lower", "bb_width"]
+        p = self.period
+        return [f"bb_upper_{p}", f"bb_middle_{p}", f"bb_lower_{p}", f"bb_width_{p}"]
 
     @property
     def is_overlay(self) -> bool:

@@ -182,7 +182,8 @@ def run_walk_forward_analysis(
                 f"[Fold {fold_idx + 1}/{n_folds_actual}] IS最適化中...",
             )
 
-        selected = _run_is_phase(
+        is_last_fold = (fold_idx == n_folds_actual - 1)
+        selected, full_is_results = _run_is_phase(
             df=df,
             all_configs=all_configs,
             target_regimes=target_regimes,
@@ -191,18 +192,12 @@ def run_walk_forward_analysis(
             optimizer=optimizer,
             trend_column=trend_column,
             n_workers=n_workers,
+            return_full_results=is_last_fold,
         )
 
         # 最終フォールドの IS 結果を保持（結果ビュー表示用）
-        if fold_idx == n_folds_actual - 1:
-            last_is_results = optimizer.run(
-                df=df,
-                configs=copy.deepcopy(all_configs),
-                target_regimes=target_regimes,
-                trend_column=trend_column,
-                n_workers=n_workers,
-                data_range=is_range,
-            )
+        if is_last_fold:
+            last_is_results = full_is_results
 
         current_step += 1
 
@@ -258,17 +253,25 @@ def _run_is_phase(
     optimizer: GridSearchOptimizer,
     trend_column: str,
     n_workers: int,
-) -> Dict[str, OptimizationEntry]:
-    """IS フェーズ: グリッドサーチ → ベスト選択"""
+    return_full_results: bool = False,
+) -> Tuple[Dict[str, OptimizationEntry], Optional[OptimizationResultSet]]:
+    """IS フェーズ: グリッドサーチ → ベスト選択
+
+    Returns:
+        (selected, full_results): selected はレジーム毎のベスト、
+        full_results は return_full_results=True の場合のみ IS 全結果。
+    """
     if wfa_config.use_validation:
         return _run_is_with_validation(
             df, all_configs, target_regimes, is_range,
             wfa_config, optimizer, trend_column, n_workers,
+            return_full_results=return_full_results,
         )
     else:
         return _run_is_direct(
             df, all_configs, target_regimes, is_range,
             optimizer, trend_column, n_workers,
+            return_full_results=return_full_results,
         )
 
 
@@ -280,7 +283,8 @@ def _run_is_direct(
     optimizer: GridSearchOptimizer,
     trend_column: str,
     n_workers: int,
-) -> Dict[str, OptimizationEntry]:
+    return_full_results: bool = False,
+) -> Tuple[Dict[str, OptimizationEntry], Optional[OptimizationResultSet]]:
     """IS 全体でグリッドサーチ → ベスト直接採用"""
     is_results = optimizer.run(
         df=df,
@@ -295,7 +299,7 @@ def _run_is_direct(
         best = is_results.filter_regime(regime).best
         if best:
             selected[regime] = best
-    return selected
+    return selected, is_results if return_full_results else None
 
 
 def _run_is_with_validation(
@@ -307,7 +311,8 @@ def _run_is_with_validation(
     optimizer: GridSearchOptimizer,
     trend_column: str,
     n_workers: int,
-) -> Dict[str, OptimizationEntry]:
+    return_full_results: bool = False,
+) -> Tuple[Dict[str, OptimizationEntry], Optional[OptimizationResultSet]]:
     """IS 内を Train/Val に分割してベスト選択"""
     is_n = is_range[1] - is_range[0]
     train_end_within_is = int(is_n * (1.0 - wfa_config.val_pct_within_is))
@@ -359,7 +364,8 @@ def _run_is_with_validation(
         if val_result.best:
             selected[regime] = val_result.best
 
-    return selected
+    # return_full_results 時は Train 結果を返す（IS の大部分をカバー）
+    return selected, train_results if return_full_results else None
 
 
 def _compute_aggregate_metrics(
