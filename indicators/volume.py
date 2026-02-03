@@ -12,7 +12,7 @@ from .base import Indicator
 
 class VWAP(Indicator):
     """
-    Volume Weighted Average Price (日次リセット + 前日VWAP切替)
+    Volume Weighted Average Price (日次リセット + 前日VWAP切替 + バンド)
 
     Parameters:
         switch_hour: 当日VWAPに切り替えるUTC時間（デフォルト1 = JST 10:00）
@@ -22,6 +22,9 @@ class VWAP(Indicator):
         vwap: 当日VWAP（日次リセット）
         vwap_prev: 前日の最終VWAP
         vwap_active: 時間帯に応じて切り替えた値（戦略で使用推奨）
+        vwap_std: VWAP周りの標準偏差
+        vwap_upper1, vwap_upper2: VWAP +1σ, +2σ
+        vwap_lower1, vwap_lower2: VWAP -1σ, -2σ
     """
 
     def __init__(self, switch_hour: int = 1):
@@ -46,10 +49,23 @@ class VWAP(Indicator):
         cum_vol = df["volume"].groupby(date).cumsum()
         df["vwap"] = cum_tp_vol / cum_vol.replace(0, np.nan)
 
+        # VWAPバンド（標準偏差）の計算
+        # σ = √(Σ((price - VWAP)² × volume) / Σvolume)
+        # 累積で計算するため、まずVWAPを計算してから偏差を求める
+        deviation_sq = (typical_price - df["vwap"]) ** 2
+        deviation_sq_vol = deviation_sq * df["volume"]
+        cum_deviation_sq_vol = deviation_sq_vol.groupby(date).cumsum()
+        variance = cum_deviation_sq_vol / cum_vol.replace(0, np.nan)
+        df["vwap_std"] = np.sqrt(variance)
+
+        # バンドの計算
+        df["vwap_upper1"] = df["vwap"] + df["vwap_std"]
+        df["vwap_upper2"] = df["vwap"] + 2 * df["vwap_std"]
+        df["vwap_lower1"] = df["vwap"] - df["vwap_std"]
+        df["vwap_lower2"] = df["vwap"] - 2 * df["vwap_std"]
+
         # 前日VWAPを計算（各日の最終VWAP値を翌日に引き継ぐ）
         # 日ごとの最終VWAPを取得
-        daily_last_vwap = df.groupby(date)["vwap"].transform("last")
-        # 1日シフトして前日のVWAPとする
         unique_dates = date.unique()
         date_to_prev_vwap = {}
         prev_vwap = np.nan
@@ -74,7 +90,10 @@ class VWAP(Indicator):
 
     @property
     def columns(self) -> List[str]:
-        return ["vwap", "vwap_prev", "vwap_active"]
+        return [
+            "vwap", "vwap_prev", "vwap_active",
+            "vwap_std", "vwap_upper1", "vwap_upper2", "vwap_lower1", "vwap_lower2"
+        ]
 
     @property
     def is_overlay(self) -> bool:
