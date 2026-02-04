@@ -26,6 +26,7 @@ from optimizer.validation import (
     run_validated_optimization,
 )
 from ui.components.styles import section_header, template_tag
+from ui.views.batch_optimizer import render_batch_view, render_batch_load_view
 
 
 REGIME_OPTIONS = {
@@ -66,7 +67,7 @@ def render_optimizer_page():
     n_compare = len(st.session_state.comparison_results)
 
     # ビュー切り替え（データ有無によらず表示）
-    col_nav1, col_nav2, col_nav3, col_nav4, col_spacer = st.columns([1, 1, 1, 1, 2])
+    col_nav1, col_nav2, col_nav3, col_nav4, col_nav5, col_nav6 = st.columns(6)
     with col_nav1:
         if st.button(
             "⚙️ 設定",
@@ -104,6 +105,22 @@ def render_optimizer_page():
         ):
             st.session_state.optimizer_view = "compare"
             st.rerun()
+    with col_nav5:
+        if st.button(
+            "🚀 バッチ",
+            type="primary" if st.session_state.optimizer_view == "batch" else "secondary",
+            use_container_width=True,
+        ):
+            st.session_state.optimizer_view = "batch"
+            st.rerun()
+    with col_nav6:
+        if st.button(
+            "📂 バッチ結果",
+            type="primary" if st.session_state.optimizer_view == "batch_load" else "secondary",
+            use_container_width=True,
+        ):
+            st.session_state.optimizer_view = "batch_load"
+            st.rerun()
 
     st.divider()
 
@@ -120,6 +137,10 @@ def render_optimizer_page():
         _render_load_view()
     elif st.session_state.optimizer_view == "compare":
         _render_compare_view()
+    elif st.session_state.optimizer_view == "batch":
+        render_batch_view()
+    elif st.session_state.optimizer_view == "batch_load":
+        render_batch_load_view()
     else:
         _render_results_view()
 

@@ -10,7 +10,7 @@ from .base import Indicator
 from .trend import SMA, EMA, ParabolicSAR
 from .momentum import RSI, MACD, Stochastic
 from .volatility import BollingerBands, ATR
-from .volume import VWAP, RelativeVolume, VolumeAnalysis
+from .volume import VWAP, RelativeVolume, VolumeAnalysis, VolumeProfile
 from .adx import ADX
 from .structure import SwingStructure, TrendStructure
 
@@ -27,6 +27,7 @@ INDICATOR_REGISTRY: Dict[str, Type[Indicator]] = {
     "vwap": VWAP,
     "rvol": RelativeVolume,
     "volume_analysis": VolumeAnalysis,
+    "volume_profile": VolumeProfile,
     "adx": ADX,
     "swing": SwingStructure,
     "structure": TrendStructure,
@@ -45,6 +46,7 @@ INDICATOR_INFO = {
     "vwap": {"label": "VWAP", "params": {"switch_hour": 1}},
     "rvol": {"label": "RVOL (相対出来高)", "params": {"period": 20}},
     "volume_analysis": {"label": "Volume Analysis", "params": {}},
+    "volume_profile": {"label": "Volume Profile (LVN/HVN)", "params": {"n_bins": 50, "smoothing": 3, "touch_tolerance": 0.5}},
     "adx": {"label": "ADX (+DI/-DI)", "params": {"period": 14}},
     "swing": {"label": "Swing Structure (HH/LL)", "params": {"min_swing_bars": 3, "atr_filter": 0.5}},
     "structure": {"label": "Trend Structure (Breakout)", "params": {"lookback": 20}},

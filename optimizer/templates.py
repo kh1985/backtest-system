@@ -805,3 +805,39 @@ _register(StrategyTemplate(
     param_ranges=[],
 ))
 
+
+# =====================================================================
+# Volume Profile戦略
+# =====================================================================
+
+# 21. VP Pullback Long（Volume Profile未テストLVN初タッチでロング）
+# exit_profiles と組み合わせて使う（ATR/BB/固定%等）
+_register(StrategyTemplate(
+    name="vp_pullback_long",
+    description="上昇トレンドでVolume ProfileのLVN（出来高の谷）に初タッチしたらロング（押し目買い）",
+    config_template={
+        "name": "vp_pullback_long",
+        "side": "long",
+        "indicators": [
+            {"type": "volume_profile", "n_bins": "{n_bins}", "smoothing": 3, "touch_tolerance": "{touch_tolerance}"},
+        ],
+        "entry_conditions": [
+            {
+                "type": "threshold",
+                "column": "vp_lvn_first_touch",
+                "operator": "==",
+                "value": 1,
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[
+        ParameterRange("n_bins", 30, 70, 20, "int"),
+        ParameterRange("touch_tolerance", 0.3, 0.7, 0.2, "float"),
+    ],
+))
+
