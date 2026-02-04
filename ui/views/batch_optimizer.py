@@ -360,8 +360,16 @@ def run_single_optimization(
     n_workers: int,
     target_regimes: List[str] = None,
     progress_callback=None,
+    adaptive_config: Optional["AdaptiveSearchConfig"] = None,
 ) -> Any:
-    """単一銘柄の最適化を実行"""
+    """
+    単一銘柄の最適化を実行
+
+    Args:
+        adaptive_config: 適応型探索の設定（Noneの場合は従来の総当たり）
+    """
+    from optimizer.adaptive import AdaptiveSearchConfig
+
     if target_regimes is None:
         target_regimes = TARGET_REGIMES
 
@@ -374,6 +382,21 @@ def run_single_optimization(
 
     configs = copy.deepcopy(all_configs)
 
+    # 適応型探索が有効な場合
+    if adaptive_config is not None:
+        # 適応型探索はOOS検証と組み合わせない（Scoutで十分なフィルタリング）
+        adaptive_result = optimizer.run_adaptive(
+            df=exec_df,
+            configs=configs,
+            target_regimes=target_regimes,
+            adaptive_config=adaptive_config,
+            n_workers=n_workers,
+            progress_callback=progress_callback,
+        )
+        # 互換性のためOptimizationResultSetを返す
+        return adaptive_result.final_result
+
+    # 従来の総当たり探索
     if use_oos:
         split_config = DataSplitConfig(
             train_pct=OOS_TRAIN_PCT,
@@ -820,6 +843,94 @@ def _render_execution_settings():
             help="同じ条件の結果が存在する場合はスキップ",
         )
 
+    # 適応型探索（Scout→Scale）設定
+    st.divider()
+    st.markdown("### 🔬 適応型探索（Scout→Scale）")
+
+    enable_adaptive = st.checkbox(
+        "適応型探索を有効化",
+        value=st.session_state.get("batch_enable_adaptive", False),
+        key="batch_enable_adaptive",
+        help="Scout→Scale + プラトー検出で効率的に探索。全組み合わせ総当たりより高速。",
+    )
+
+    if enable_adaptive:
+        col_s1, col_s2 = st.columns(2)
+
+        with col_s1:
+            st.markdown("**Scout設定**")
+            scout_ratio = st.slider(
+                "Scoutデータ割合",
+                min_value=0.1,
+                max_value=0.5,
+                value=st.session_state.get("batch_scout_ratio", 0.2),
+                step=0.05,
+                key="batch_scout_ratio",
+                help="全データの何%でScout探索するか（少ないほど速い）",
+            )
+            scout_top_n = st.number_input(
+                "Scout→Scale持越し数",
+                min_value=5,
+                max_value=100,
+                value=st.session_state.get("batch_scout_top_n", 20),
+                key="batch_scout_top_n",
+                help="Scoutで有望だった上位N個をScaleフェーズに持ち越す",
+            )
+
+        with col_s2:
+            st.markdown("**プラトー検出**")
+            plateau_rounds = st.number_input(
+                "連続未改善ラウンド数",
+                min_value=1,
+                max_value=5,
+                value=st.session_state.get("batch_plateau_rounds", 2),
+                key="batch_plateau_rounds",
+                help="この回数連続で改善がなければ早期終了",
+            )
+            plateau_threshold = st.number_input(
+                "改善閾値",
+                min_value=0.0001,
+                max_value=0.01,
+                value=st.session_state.get("batch_plateau_threshold", 0.001),
+                step=0.0001,
+                format="%.4f",
+                key="batch_plateau_threshold",
+                help="この値より小さい改善は「改善なし」とみなす",
+            )
+
+        st.markdown("**ラウンド設定**")
+        col_r1, col_r2, col_r3 = st.columns(3)
+
+        with col_r1:
+            max_rounds = st.number_input(
+                "最大ラウンド数",
+                min_value=1,
+                max_value=10,
+                value=st.session_state.get("batch_max_rounds", 5),
+                key="batch_max_rounds",
+            )
+
+        with col_r2:
+            top_n_survivors = st.number_input(
+                "次ラウンド持越し数",
+                min_value=3,
+                max_value=30,
+                value=st.session_state.get("batch_top_n_survivors", 10),
+                key="batch_top_n_survivors",
+                help="各ラウンドの上位N個を次ラウンドに持ち越す",
+            )
+
+        with col_r3:
+            exploration_ratio = st.slider(
+                "新規探索割合",
+                min_value=0.0,
+                max_value=0.5,
+                value=st.session_state.get("batch_exploration_ratio", 0.2),
+                step=0.1,
+                key="batch_exploration_ratio",
+                help="各ラウンドで未テストのconfigを試す割合",
+            )
+
 
 def _render_execution_summary(scan_result: Dict[str, Any]):
     """実行サマリーを描画"""
@@ -895,6 +1006,10 @@ def _render_batch_progress():
 
 def _start_batch_optimization(scan_result: Dict[str, Any]):
     """バッチ最適化を開始"""
+    from optimizer.adaptive import (
+        AdaptiveSearchConfig, ScoutConfig, PlateauConfig, RoundConfig,
+    )
+
     selected_symbols = st.session_state.get("batch_selected_symbols", [])
     selected_periods = st.session_state.get("batch_selected_periods", [])
     tf_combos = st.session_state.get("batch_tf_combos", [])
@@ -904,6 +1019,31 @@ def _start_batch_optimization(scan_result: Dict[str, Any]):
     use_oos = st.session_state.get("batch_use_oos", True)
     n_workers = st.session_state.get("batch_n_workers", 4)
     reuse_existing = st.session_state.get("batch_reuse_existing", True)
+
+    # 適応型探索の設定を取得
+    enable_adaptive = st.session_state.get("batch_enable_adaptive", False)
+    adaptive_config = None
+
+    if enable_adaptive:
+        adaptive_config = AdaptiveSearchConfig(
+            scout=ScoutConfig(
+                sample_ratio=st.session_state.get("batch_scout_ratio", 0.2),
+                top_n_to_scale=st.session_state.get("batch_scout_top_n", 20),
+            ),
+            plateau=PlateauConfig(
+                min_improvement=st.session_state.get("batch_plateau_threshold", 0.001),
+                consecutive_rounds=st.session_state.get("batch_plateau_rounds", 2),
+            ),
+            round=RoundConfig(
+                max_rounds=st.session_state.get("batch_max_rounds", 5),
+                top_n_survivors=st.session_state.get("batch_top_n_survivors", 10),
+                exploration_ratio=st.session_state.get("batch_exploration_ratio", 0.2),
+            ),
+            enable_scout=True,
+            enable_plateau=True,
+            enable_rounds=True,
+            verbose=True,
+        )
 
     files = scan_result["files"]
 
@@ -1022,6 +1162,7 @@ def _start_batch_optimization(scan_result: Dict[str, Any]):
                 n_workers=n_workers,
                 target_regimes=selected_regimes,
                 progress_callback=update_progress,
+                adaptive_config=adaptive_config,
             )
 
             # 結果保存

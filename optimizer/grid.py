@@ -818,3 +818,306 @@ class GridSearchOptimizer:
                 entry.metrics.equity_curve = []
                 entry.metrics.cumulative_returns = []
                 entry.metrics.drawdown_series = []
+
+    # =========================================================================
+    # 適応型探索（Scout→Scale + プラトー検出 + ラウンド制）
+    # =========================================================================
+
+    def run_adaptive(
+        self,
+        df: pd.DataFrame,
+        configs: List[Dict[str, Any]],
+        target_regimes: List[str],
+        adaptive_config: "AdaptiveSearchConfig",
+        trend_column: str = "trend_regime",
+        progress_callback: Optional[Callable[[int, int, str], None]] = None,
+        n_workers: int = 1,
+    ) -> "AdaptiveSearchResult":
+        """
+        適応型グリッドサーチを実行
+
+        Scout→Scaleとプラトー検出を組み合わせた効率的な最適化。
+
+        Args:
+            df: 実行TFのDataFrame（trend_regimeカラム付き）
+            configs: ConfigStrategy用configのリスト
+            target_regimes: 対象レジーム ["uptrend", "downtrend", "range"]
+            adaptive_config: 適応型探索の設定
+            trend_column: トレンドレジームカラム名
+            progress_callback: 進捗コールバック(current, total, description)
+            n_workers: 並列ワーカー数
+
+        Returns:
+            AdaptiveSearchResult
+        """
+        import time
+        from .adaptive import (
+            AdaptiveSearchConfig, AdaptiveSearchResult, RoundResult,
+        )
+
+        total_start = time.time()
+        round_history: List[RoundResult] = []
+        scout_result: Optional[OptimizationResultSet] = None
+        best_score = -float("inf")
+        consecutive_no_improve = 0
+        early_stopped = False
+        early_stop_round = None
+        total_configs_tested = 0
+
+        # configのコピーを作成（元のリストを変更しないため）
+        working_configs = [dict(c) for c in configs]
+
+        # --- Scout Phase ---
+        if adaptive_config.enable_scout:
+            if adaptive_config.verbose:
+                logger.info(f"Scout Phase: {len(working_configs)} configs, "
+                           f"sample_ratio={adaptive_config.scout.sample_ratio}")
+
+            scout_result = self._run_scout(
+                df, working_configs, target_regimes,
+                adaptive_config.scout, trend_column,
+                progress_callback, n_workers,
+            )
+            total_configs_tested += len(working_configs) * len(target_regimes)
+
+            # Scoutで有望なconfigを絞り込み
+            working_configs = self._select_promising_configs(
+                scout_result,
+                adaptive_config.scout.top_n_to_scale,
+                configs,  # 元のconfigプールを参照
+            )
+
+            if adaptive_config.verbose:
+                logger.info(f"Scout完了: {adaptive_config.scout.top_n_to_scale} configs selected")
+
+        # --- Scale Phase (ラウンド制) ---
+        max_rounds = adaptive_config.round.max_rounds if adaptive_config.enable_rounds else 1
+
+        for round_num in range(max_rounds):
+            round_start = time.time()
+
+            if adaptive_config.verbose:
+                logger.info(f"Round {round_num + 1}/{max_rounds}: "
+                           f"{len(working_configs)} configs")
+
+            # ラウンド実行
+            round_result_set = self.run(
+                df=df,
+                configs=[dict(c) for c in working_configs],  # コピー
+                target_regimes=target_regimes,
+                trend_column=trend_column,
+                progress_callback=progress_callback,
+                n_workers=n_workers,
+            )
+
+            round_elapsed = time.time() - round_start
+            round_best = round_result_set.best
+            round_best_score = round_best.composite_score if round_best else 0.0
+            improvement = round_best_score - best_score
+
+            round_result = RoundResult(
+                round_number=round_num,
+                result_set=round_result_set,
+                best_score=round_best_score,
+                improvement=improvement,
+                elapsed_time=round_elapsed,
+                configs_tested=len(working_configs) * len(target_regimes),
+                is_plateau=False,
+            )
+            round_history.append(round_result)
+            total_configs_tested += round_result.configs_tested
+
+            # プラトー検出
+            if adaptive_config.enable_plateau:
+                threshold = adaptive_config.plateau.min_improvement
+                if adaptive_config.plateau.use_relative and best_score > 0:
+                    threshold = best_score * adaptive_config.plateau.relative_threshold
+
+                if improvement < threshold:
+                    consecutive_no_improve += 1
+                    if adaptive_config.verbose:
+                        logger.info(f"Round {round_num + 1}: 改善小 "
+                                   f"({consecutive_no_improve}/{adaptive_config.plateau.consecutive_rounds})")
+                else:
+                    consecutive_no_improve = 0
+                    best_score = round_best_score
+
+                if consecutive_no_improve >= adaptive_config.plateau.consecutive_rounds:
+                    round_result.is_plateau = True
+                    early_stopped = True
+                    early_stop_round = round_num
+                    if adaptive_config.verbose:
+                        logger.info(f"プラトー検出: Round {round_num + 1}で早期終了")
+                    break
+            else:
+                if round_best_score > best_score:
+                    best_score = round_best_score
+
+            # 次ラウンドのconfig生成（最終ラウンドでなければ）
+            if adaptive_config.enable_rounds and round_num < max_rounds - 1:
+                working_configs = self._generate_next_round_configs(
+                    round_result,
+                    configs,  # 元のconfigプール
+                    adaptive_config.round,
+                )
+
+        # 全ラウンドの結果をマージ
+        final_result = self._merge_round_results(round_history)
+
+        total_elapsed = time.time() - total_start
+
+        return AdaptiveSearchResult(
+            final_result=final_result,
+            round_history=round_history,
+            scout_result=scout_result,
+            total_configs_tested=total_configs_tested,
+            total_elapsed_time=total_elapsed,
+            early_stopped=early_stopped,
+            early_stop_round=early_stop_round,
+        )
+
+    def _run_scout(
+        self,
+        df: pd.DataFrame,
+        configs: List[Dict[str, Any]],
+        target_regimes: List[str],
+        scout_config: "ScoutConfig",
+        trend_column: str,
+        progress_callback: Optional[Callable[[int, int, str], None]],
+        n_workers: int,
+    ) -> OptimizationResultSet:
+        """Scoutフェーズ: サンプルデータで高速探索"""
+        from .adaptive import ScoutConfig
+
+        n = len(df)
+        sample_size = max(
+            int(n * scout_config.sample_ratio),
+            scout_config.min_samples,
+        )
+        sample_size = min(sample_size, n)
+
+        # サンプリング方法に応じてdata_rangeを決定
+        if scout_config.sample_method == "head":
+            data_range = (0, sample_size)
+        elif scout_config.sample_method == "tail":
+            data_range = (n - sample_size, n)
+        else:  # random - 現状はheadにフォールバック
+            data_range = (0, sample_size)
+
+        return self.run(
+            df=df,
+            configs=[dict(c) for c in configs],  # コピー
+            target_regimes=target_regimes,
+            trend_column=trend_column,
+            progress_callback=progress_callback,
+            n_workers=n_workers,
+            data_range=data_range,
+        )
+
+    def _select_promising_configs(
+        self,
+        scout_result: OptimizationResultSet,
+        top_n: int,
+        original_configs: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Scoutで有望だったconfigを選択"""
+        ranked = scout_result.ranked()[:top_n]
+
+        # 選ばれたtemplate_name + paramsの組み合わせを収集
+        selected_keys = set()
+        for entry in ranked:
+            key = self._config_key_from_entry(entry)
+            selected_keys.add(key)
+
+        # 元のconfigから該当するものを抽出
+        selected_configs = []
+        for config in original_configs:
+            key = self._config_key(config)
+            if key in selected_keys:
+                selected_configs.append(dict(config))
+
+        # 重複を除去しつつ順序を維持
+        seen = set()
+        unique_configs = []
+        for config in selected_configs:
+            key = self._config_key(config)
+            if key not in seen:
+                seen.add(key)
+                unique_configs.append(config)
+
+        return unique_configs if unique_configs else [dict(c) for c in original_configs[:top_n]]
+
+    def _generate_next_round_configs(
+        self,
+        prev_round: "RoundResult",
+        all_configs: List[Dict[str, Any]],
+        round_config: "RoundConfig",
+    ) -> List[Dict[str, Any]]:
+        """次ラウンドのconfigを生成（上位持越し + 新規探索）"""
+        import random
+        from .adaptive import RoundConfig
+
+        # 上位configを取得
+        ranked = prev_round.result_set.ranked()[:round_config.top_n_survivors]
+        survivor_keys = set()
+        survivor_configs = []
+
+        for entry in ranked:
+            key = self._config_key_from_entry(entry)
+            if key not in survivor_keys:
+                survivor_keys.add(key)
+                # 元のconfigから該当するものを探す
+                for config in all_configs:
+                    if self._config_key(config) == key:
+                        survivor_configs.append(dict(config))
+                        break
+
+        # 新規探索用config（未テストのものからランダム選択）
+        tested_keys = survivor_keys.copy()
+        for entry in prev_round.result_set.entries:
+            tested_keys.add(self._config_key_from_entry(entry))
+
+        untested = [c for c in all_configs if self._config_key(c) not in tested_keys]
+
+        n_new = int(round_config.configs_per_round * round_config.exploration_ratio)
+        n_exploit = round_config.configs_per_round - n_new
+
+        # 上位を持ち越し
+        exploit_configs = survivor_configs[:n_exploit]
+
+        # 新規をランダム選択
+        if untested and n_new > 0:
+            new_configs = random.sample(untested, min(n_new, len(untested)))
+        else:
+            new_configs = []
+
+        return [dict(c) for c in exploit_configs + new_configs]
+
+    def _config_key(self, config: Dict[str, Any]) -> str:
+        """configの一意キーを生成"""
+        template_name = config.get("_template_name", config.get("name", "unknown"))
+        params = config.get("_params", {})
+        return f"{template_name}:{json.dumps(params, sort_keys=True)}"
+
+    def _config_key_from_entry(self, entry: OptimizationEntry) -> str:
+        """OptimizationEntryから一意キーを生成"""
+        return f"{entry.template_name}:{json.dumps(entry.params, sort_keys=True)}"
+
+    def _merge_round_results(
+        self,
+        round_history: List["RoundResult"],
+    ) -> OptimizationResultSet:
+        """全ラウンドの結果をマージ（重複除去）"""
+        merged = OptimizationResultSet()
+        seen_keys = set()
+
+        for rr in round_history:
+            for entry in rr.result_set.entries:
+                # template_name + regime + params で重複判定
+                key = (entry.template_name, entry.trend_regime, json.dumps(entry.params, sort_keys=True))
+                if key not in seen_keys:
+                    merged.add(entry)
+                    seen_keys.add(key)
+
+        self._trim_results(merged)
+        return merged
