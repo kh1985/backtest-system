@@ -855,81 +855,118 @@ def _render_execution_settings():
     )
 
     if enable_adaptive:
-        col_s1, col_s2 = st.columns(2)
+        st.caption("💡 20%のデータで高速探索 → 良いものだけフルデータで検証。改善が止まったら自動終了。")
 
-        with col_s1:
-            st.markdown("**Scout設定**")
-            scout_ratio = st.slider(
-                "Scoutデータ割合",
-                min_value=0.1,
-                max_value=0.5,
-                value=st.session_state.get("batch_scout_ratio", 0.2),
-                step=0.05,
-                key="batch_scout_ratio",
-                help="全データの何%でScout探索するか（少ないほど速い）",
-            )
-            scout_top_n = st.number_input(
-                "Scout→Scale持越し数",
-                min_value=5,
-                max_value=100,
-                value=st.session_state.get("batch_scout_top_n", 20),
-                key="batch_scout_top_n",
-                help="Scoutで有望だった上位N個をScaleフェーズに持ち越す",
-            )
+        # プリセット選択
+        preset = st.radio(
+            "探索プリセット",
+            ["標準（推奨）", "高速", "精密"],
+            index=st.session_state.get("batch_adaptive_preset_idx", 0),
+            key="batch_adaptive_preset",
+            horizontal=True,
+            help="標準: バランス良し / 高速: 精度を犠牲に時短 / 精密: 時間かけて丁寧に探索",
+        )
 
-        with col_s2:
-            st.markdown("**プラトー検出**")
-            plateau_rounds = st.number_input(
-                "連続未改善ラウンド数",
-                min_value=1,
-                max_value=5,
-                value=st.session_state.get("batch_plateau_rounds", 2),
-                key="batch_plateau_rounds",
-                help="この回数連続で改善がなければ早期終了",
-            )
-            plateau_threshold = st.number_input(
-                "改善閾値",
-                min_value=0.0001,
-                max_value=0.01,
-                value=st.session_state.get("batch_plateau_threshold", 0.001),
-                step=0.0001,
-                format="%.4f",
-                key="batch_plateau_threshold",
-                help="この値より小さい改善は「改善なし」とみなす",
-            )
+        # プリセットに応じてデフォルト値を設定
+        if preset == "高速":
+            preset_values = {
+                "scout_ratio": 0.1, "scout_top_n": 10,
+                "plateau_rounds": 1, "plateau_threshold": 0.002,
+                "max_rounds": 3, "top_n_survivors": 5, "exploration_ratio": 0.1,
+            }
+            st.session_state["batch_adaptive_preset_idx"] = 1
+        elif preset == "精密":
+            preset_values = {
+                "scout_ratio": 0.3, "scout_top_n": 30,
+                "plateau_rounds": 3, "plateau_threshold": 0.0005,
+                "max_rounds": 7, "top_n_survivors": 15, "exploration_ratio": 0.3,
+            }
+            st.session_state["batch_adaptive_preset_idx"] = 2
+        else:  # 標準
+            preset_values = {
+                "scout_ratio": 0.2, "scout_top_n": 20,
+                "plateau_rounds": 2, "plateau_threshold": 0.001,
+                "max_rounds": 5, "top_n_survivors": 10, "exploration_ratio": 0.2,
+            }
+            st.session_state["batch_adaptive_preset_idx"] = 0
 
-        st.markdown("**ラウンド設定**")
-        col_r1, col_r2, col_r3 = st.columns(3)
+        # 詳細設定（折りたたみ）
+        with st.expander("詳細設定（カスタマイズ）", expanded=False):
+            col_s1, col_s2 = st.columns(2)
 
-        with col_r1:
-            max_rounds = st.number_input(
-                "最大ラウンド数",
-                min_value=1,
-                max_value=10,
-                value=st.session_state.get("batch_max_rounds", 5),
-                key="batch_max_rounds",
-            )
+            with col_s1:
+                st.markdown("**Scout設定**")
+                scout_ratio = st.slider(
+                    "Scoutデータ割合",
+                    min_value=0.1,
+                    max_value=0.5,
+                    value=st.session_state.get("batch_scout_ratio", preset_values["scout_ratio"]),
+                    step=0.05,
+                    key="batch_scout_ratio",
+                    help="全データの何%でScout探索するか（少ないほど速い）",
+                )
+                scout_top_n = st.number_input(
+                    "Scout→Scale持越し数",
+                    min_value=5,
+                    max_value=100,
+                    value=st.session_state.get("batch_scout_top_n", preset_values["scout_top_n"]),
+                    key="batch_scout_top_n",
+                    help="Scoutで有望だった上位N個をScaleフェーズに持ち越す",
+                )
 
-        with col_r2:
-            top_n_survivors = st.number_input(
-                "次ラウンド持越し数",
-                min_value=3,
-                max_value=30,
-                value=st.session_state.get("batch_top_n_survivors", 10),
-                key="batch_top_n_survivors",
-                help="各ラウンドの上位N個を次ラウンドに持ち越す",
-            )
+            with col_s2:
+                st.markdown("**プラトー検出**")
+                plateau_rounds = st.number_input(
+                    "連続未改善ラウンド数",
+                    min_value=1,
+                    max_value=5,
+                    value=st.session_state.get("batch_plateau_rounds", preset_values["plateau_rounds"]),
+                    key="batch_plateau_rounds",
+                    help="この回数連続で改善がなければ早期終了",
+                )
+                plateau_threshold = st.number_input(
+                    "改善閾値",
+                    min_value=0.0001,
+                    max_value=0.01,
+                    value=st.session_state.get("batch_plateau_threshold", preset_values["plateau_threshold"]),
+                    step=0.0001,
+                    format="%.4f",
+                    key="batch_plateau_threshold",
+                    help="この値より小さい改善は「改善なし」とみなす",
+                )
 
-        with col_r3:
-            exploration_ratio = st.slider(
-                "新規探索割合",
-                min_value=0.0,
-                max_value=0.5,
-                value=st.session_state.get("batch_exploration_ratio", 0.2),
-                step=0.1,
-                key="batch_exploration_ratio",
-                help="各ラウンドで未テストのconfigを試す割合",
-            )
+            st.markdown("**ラウンド設定**")
+            col_r1, col_r2, col_r3 = st.columns(3)
+
+            with col_r1:
+                max_rounds = st.number_input(
+                    "最大ラウンド数",
+                    min_value=1,
+                    max_value=10,
+                    value=st.session_state.get("batch_max_rounds", preset_values["max_rounds"]),
+                    key="batch_max_rounds",
+                )
+
+            with col_r2:
+                top_n_survivors = st.number_input(
+                    "次ラウンド持越し数",
+                    min_value=3,
+                    max_value=30,
+                    value=st.session_state.get("batch_top_n_survivors", preset_values["top_n_survivors"]),
+                    key="batch_top_n_survivors",
+                    help="各ラウンドの上位N個を次ラウンドに持ち越す",
+                )
+
+            with col_r3:
+                exploration_ratio = st.slider(
+                    "新規探索割合",
+                    min_value=0.0,
+                    max_value=0.5,
+                    value=st.session_state.get("batch_exploration_ratio", preset_values["exploration_ratio"]),
+                    step=0.1,
+                    key="batch_exploration_ratio",
+                    help="各ラウンドで未テストのconfigを試す割合",
+                )
 
 
 def _render_execution_summary(scan_result: Dict[str, Any]):
@@ -1102,6 +1139,7 @@ def _start_batch_optimization(scan_result: Dict[str, Any]):
     grid_progress_placeholder = st.empty()
     status_placeholder = st.empty()
     stats_placeholder = st.empty()
+    cancel_placeholder = st.empty()
 
     # 初期状態を表示
     with progress_placeholder.container():
@@ -1118,6 +1156,11 @@ def _start_batch_optimization(scan_result: Dict[str, Any]):
             st.metric("⏭️ スキップ", 0)
         with col3:
             st.metric("❌ エラー", 0)
+    with cancel_placeholder.container():
+        if st.button("⏹️ 中止", type="secondary", key="batch_cancel_btn"):
+            st.session_state.batch_running = False
+            st.session_state.batch_cancel_requested = True
+            st.rerun()
 
     def update_progress(completed: int, total: int, desc: str):
         """グリッドサーチの進捗コールバック"""
