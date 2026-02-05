@@ -209,7 +209,6 @@ class GeneticOptimizer:
             commission_pct=commission_pct,
             slippage_pct=slippage_pct,
             scoring_weights=scoring_weights,
-            min_trades=5,
         )
 
     def run(
@@ -354,11 +353,11 @@ class GeneticOptimizer:
 
                 # 結果を個体に反映
                 ind.score = entry.composite_score
-                ind.pnl = entry.metrics.total_pnl
+                ind.pnl = entry.metrics.total_profit_pct
                 ind.sharpe = entry.metrics.sharpe_ratio
-                ind.trades = entry.metrics.trades
+                ind.trades = entry.metrics.total_trades
                 ind.win_rate = entry.metrics.win_rate
-                ind.max_dd = entry.metrics.max_drawdown
+                ind.max_dd = entry.metrics.max_drawdown_pct
                 ind.status = "evaluated"
 
             except Exception as e:

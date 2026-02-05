@@ -21,7 +21,9 @@ from data.binance_loader import BinanceCSVLoader
 from data.base import OHLCVData
 from analysis.trend import TrendDetector, TrendRegime
 from optimizer.grid import GridSearchOptimizer
+from optimizer.genetic import GeneticOptimizer, GAConfig, GAResult
 from optimizer.templates import BUILTIN_TEMPLATES
+from optimizer.blacklist import get_blacklist, add_fail_to_blacklist
 from optimizer.results import OptimizationResultSet, OptimizationEntry
 from optimizer.validation import (
     DataSplitConfig,
@@ -353,6 +355,144 @@ def generate_all_configs(
     return all_configs
 
 
+def run_single_ga_optimization(
+    exec_df: pd.DataFrame,
+    templates: List[str],
+    target_regimes: List[str],
+    ga_config: GAConfig,
+    symbol: str = "UNKNOWN",
+    progress_callback=None,
+    use_oos: bool = False,
+    train_ratio: float = 0.8,
+    use_blacklist: bool = True,
+) -> List[GAResult]:
+    """
+    GA最適化を実行（OOS検証オプション付き）
+
+    Args:
+        exec_df: トレンドラベル付きのDataFrame
+        templates: 使用するテンプレート名リスト
+        target_regimes: 対象レジームリスト
+        ga_config: GA設定
+        symbol: 銘柄名
+        progress_callback: 進捗コールバック
+        use_oos: OOS検証を行うかどうか
+        train_ratio: Train期間の割合（デフォルト80%）
+        use_blacklist: ブラックリスト参照するかどうか
+
+    Returns:
+        List[GAResult]: 各レジームのGA結果リスト
+    """
+    from optimizer.scoring import ScoringWeights
+
+    # OOS用にデータ分割
+    n_rows = len(exec_df)
+    if use_oos:
+        split_idx = int(n_rows * train_ratio)
+        train_df = exec_df.iloc[:split_idx].copy()
+        test_df = exec_df.iloc[split_idx:].copy()
+    else:
+        train_df = exec_df
+        test_df = None
+
+    optimizer = GeneticOptimizer(
+        templates=templates,
+        ga_config=ga_config,
+        scoring_weights=ScoringWeights(),
+        initial_capital=INITIAL_CAPITAL,
+        commission_pct=COMMISSION_PCT,
+        slippage_pct=SLIPPAGE_PCT,
+    )
+
+    results = []
+    total_regimes = len(target_regimes)
+
+    for i, regime in enumerate(target_regimes):
+        # ブラックリストフィルタリング（有効な場合のみ）
+        if use_blacklist:
+            blacklist = get_blacklist()
+            filtered_templates = blacklist.filter_templates(templates, symbol, regime)
+
+            if not filtered_templates:
+                # 全テンプレートがブラックリスト済みの場合はスキップ
+                continue
+
+            # テンプレートを更新
+            optimizer.templates = filtered_templates
+        else:
+            optimizer.templates = templates
+
+        def ga_progress(gen, max_gen, desc):
+            if progress_callback:
+                base = i * ga_config.max_generations
+                current = base + gen
+                total = total_regimes * ga_config.max_generations
+                progress_callback(current, total, f"GA [{regime}] 世代 {gen}/{max_gen}")
+
+        # TrainデータでGA探索
+        ga_result = optimizer.run(
+            df=train_df,
+            target_regime=regime,
+            symbol=symbol,
+            progress_callback=ga_progress,
+        )
+
+        # OOS検証: 最終勝者をTestデータで評価
+        if use_oos and test_df is not None and ga_result.final_winner:
+            winner = ga_result.final_winner
+            train_pnl = winner.get("pnl", 0)
+
+            # Test期間で同じ戦略を評価
+            from optimizer.genetic import Individual
+            test_ind = Individual(
+                template_name=winner["template"],
+                params=winner["params"],
+                generation=0,
+            )
+
+            try:
+                config = test_ind.to_config()
+                entry = optimizer._grid_optimizer._run_single(
+                    df=test_df,
+                    config=config,
+                    template_name=test_ind.template_name,
+                    params=test_ind.params,
+                    target_regime=regime,
+                    trend_column="trend_label",
+                )
+                test_pnl = entry.metrics.total_profit_pct
+                test_trades = entry.metrics.total_trades
+            except Exception:
+                test_pnl = 0.0
+                test_trades = 0
+
+            # 判定: Test PnL > 0 かつ Train PnLの30%以上維持でPASS
+            if test_pnl > 0 and (train_pnl <= 0 or test_pnl >= train_pnl * 0.3):
+                verdict = "PASS"
+            else:
+                verdict = "FAIL"
+                # FAILをブラックリストに自動登録
+                template_name = ga_result.final_winner.get("template", "")
+                if template_name:
+                    add_fail_to_blacklist(
+                        symbol=symbol,
+                        regime=regime,
+                        template=template_name,
+                        test_pnl=test_pnl,
+                        train_pnl=train_pnl,
+                    )
+
+            # GA結果にOOS情報を追加
+            ga_result.final_winner["train_pnl"] = train_pnl
+            ga_result.final_winner["test_pnl"] = test_pnl
+            ga_result.final_winner["test_trades"] = test_trades
+            ga_result.final_winner["verdict"] = verdict
+
+        results.append(ga_result)
+
+    return results
+
+
 def run_single_optimization(
     exec_df: pd.DataFrame,
     all_configs: List[Dict[str, Any]],
@@ -503,6 +643,23 @@ def render_batch_view():
     st.subheader("🚀 バッチ最適化")
     st.caption("inputdataから全銘柄×全TF×全期間を一括最適化")
 
+    # GA採用候補からの設定がある場合は通知
+    if st.session_state.get("batch_from_ga_candidates"):
+        candidates = st.session_state.get("ga_adopted_candidates", {})
+        source = candidates.get("source", "")
+        symbols = candidates.get("symbols", [])
+        templates = candidates.get("templates", [])
+
+        st.info(f"🎯 **GA採用候補からの設定** (ソース: {source})\n\n"
+                f"銘柄: {len(symbols)}種 | テンプレート: {len(templates)}種")
+
+        col1, col2 = st.columns([1, 4])
+        with col1:
+            if st.button("❌ 設定をクリア", key="clear_ga_candidates"):
+                st.session_state.batch_from_ga_candidates = False
+                st.session_state.ga_adopted_candidates = {}
+                st.rerun()
+
     # データスキャン
     scan_result = scan_inputdata()
 
@@ -544,6 +701,13 @@ def render_batch_view():
 
     # --- 実行サマリー ---
     _render_execution_summary(scan_result)
+
+    # --- 自動実行チェック（GA候補からの遷移時） ---
+    if st.session_state.get("batch_auto_start"):
+        st.session_state.batch_auto_start = False  # フラグクリア
+        st.info("🚀 GA採用候補のグリッドサーチを自動開始します...")
+        _start_batch_optimization(scan_result)
+        return
 
     # --- 実行ボタン ---
     st.divider()
@@ -611,11 +775,20 @@ def _render_data_selection(scan_result: Dict[str, Any]):
     selected_symbols = []
     rows = [symbols[i:i + n_cols] for i in range(0, len(symbols), n_cols)]
 
+    # GA採用候補からの銘柄リスト
+    ga_candidates = st.session_state.get("ga_adopted_candidates", {})
+    ga_symbols = ga_candidates.get("symbols", [])
+    from_ga = st.session_state.get("batch_from_ga_candidates", False)
+
     for row in rows:
         cols = st.columns(n_cols)
         for i, sym in enumerate(row):
             with cols[i]:
-                default_val = st.session_state.get(f"batch_symbol_{sym}", True)
+                # GA採用候補モードの場合は、候補の銘柄だけをデフォルトON
+                if from_ga and ga_symbols:
+                    default_val = sym in ga_symbols
+                else:
+                    default_val = st.session_state.get(f"batch_symbol_{sym}", True)
                 if st.checkbox(
                     sym.replace("USDT", ""),
                     value=default_val,
@@ -624,7 +797,8 @@ def _render_data_selection(scan_result: Dict[str, Any]):
                     selected_symbols.append(sym)
 
     st.session_state.batch_selected_symbols = selected_symbols
-    st.caption(f"選択中: {len(selected_symbols)} / {len(symbols)} 銘柄")
+    ga_info = f" (GA候補: {len(ga_symbols)})" if from_ga and ga_symbols else ""
+    st.caption(f"選択中: {len(selected_symbols)} / {len(symbols)} 銘柄{ga_info}")
 
 
 def _render_timeframe_selection(scan_result: Dict[str, Any]):
@@ -689,6 +863,16 @@ def _render_template_selection():
                 st.session_state[f"batch_template_{tname}"] = "short" in tname
             st.rerun()
 
+    # ブラックリストからテンプレートごとの件数を取得
+    blacklist = get_blacklist()
+    bl_summary = blacklist.summary()
+    bl_by_template = bl_summary.get("by_template", {})
+
+    # GA採用候補からのテンプレートリスト
+    ga_candidates = st.session_state.get("ga_adopted_candidates", {})
+    ga_templates = ga_candidates.get("templates", [])
+    from_ga = st.session_state.get("batch_from_ga_candidates", False)
+
     # ロング系
     st.markdown("**📈 ロング系**")
     long_templates = [t for t in BUILTIN_TEMPLATES if "short" not in t]
@@ -696,7 +880,14 @@ def _render_template_selection():
 
     for tname in long_templates:
         label = get_template_label(tname)
-        default_val = st.session_state.get(f"batch_template_{tname}", True)
+        bl_count = bl_by_template.get(tname, 0)
+        if bl_count > 0:
+            label = f"{label} (BL: {bl_count})"
+        # GA採用候補モードの場合は、候補のテンプレートだけをデフォルトON
+        if from_ga and ga_templates:
+            default_val = tname in ga_templates
+        else:
+            default_val = st.session_state.get(f"batch_template_{tname}", True)
         if st.checkbox(
             label,
             value=default_val,
@@ -710,7 +901,14 @@ def _render_template_selection():
 
     for tname in short_templates:
         label = get_template_label(tname)
-        default_val = st.session_state.get(f"batch_template_{tname}", True)
+        bl_count = bl_by_template.get(tname, 0)
+        if bl_count > 0:
+            label = f"{label} (BL: {bl_count})"
+        # GA採用候補モードの場合は、候補のテンプレートだけをデフォルトON
+        if from_ga and ga_templates:
+            default_val = tname in ga_templates
+        else:
+            default_val = st.session_state.get(f"batch_template_{tname}", True)
         if st.checkbox(
             label,
             value=default_val,
@@ -719,7 +917,12 @@ def _render_template_selection():
             selected_templates.append(tname)
 
     st.session_state.batch_selected_templates = selected_templates
-    st.caption(f"選択中: {len(selected_templates)} / {len(BUILTIN_TEMPLATES)} テンプレート")
+
+    # ブラックリスト合計も表示
+    total_bl = bl_summary.get("total", 0)
+    bl_info = f" | BL合計: {total_bl}件" if total_bl > 0 else ""
+    ga_info = f" | GA候補: {len(ga_templates)}" if from_ga and ga_templates else ""
+    st.caption(f"選択中: {len(selected_templates)} / {len(BUILTIN_TEMPLATES)} テンプレート{bl_info}{ga_info}")
 
 
 def _render_exit_selection():
@@ -817,7 +1020,7 @@ def _render_execution_settings():
     st.divider()
 
     # その他の設定
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
 
     with col1:
         use_oos = st.checkbox(
@@ -828,6 +1031,14 @@ def _render_execution_settings():
         )
 
     with col2:
+        use_blacklist = st.checkbox(
+            "ブラックリスト参照",
+            value=st.session_state.get("batch_use_blacklist", True),
+            key="batch_use_blacklist",
+            help="過去にFAILした組み合わせをスキップ",
+        )
+
+    with col3:
         n_workers = st.selectbox(
             "並列数",
             options=[1, 2, 4, 8],
@@ -835,7 +1046,7 @@ def _render_execution_settings():
             key="batch_n_workers",
         )
 
-    with col3:
+    with col4:
         reuse_existing = st.checkbox(
             "既存結果を再利用",
             value=st.session_state.get("batch_reuse_existing", True),
@@ -843,130 +1054,61 @@ def _render_execution_settings():
             help="同じ条件の結果が存在する場合はスキップ",
         )
 
-    # 適応型探索（Scout→Scale）設定
+    # 探索方法の選択
     st.divider()
-    st.markdown("### 🔬 適応型探索（Scout→Scale）")
+    st.markdown("### 🔍 探索方法")
 
-    enable_adaptive = st.checkbox(
-        "適応型探索を有効化",
-        value=st.session_state.get("batch_enable_adaptive", False),
-        key="batch_enable_adaptive",
-        help="Scout→Scale + プラトー検出で効率的に探索。全組み合わせ総当たりより高速。",
+    search_method = st.radio(
+        "探索アルゴリズム",
+        ["grid", "ga"],
+        format_func=lambda x: {
+            "grid": "グリッドサーチ（全組み合わせ）",
+            "ga": "🧬 遺伝的アルゴリズム（効率的探索）",
+        }[x],
+        index=st.session_state.get("batch_search_method_idx", 0),
+        key="batch_search_method",
+        horizontal=True,
     )
+    st.session_state["batch_search_method_idx"] = 0 if search_method == "grid" else 1
 
-    if enable_adaptive:
-        st.caption("💡 20%のデータで高速探索 → 良いものだけフルデータで検証。改善が止まったら自動終了。")
+    if search_method == "ga":
+        st.info("💡 GAは全パラメータ組み合わせを試さず、進化的に良い解を探索。グリッドサーチの1/3〜1/5の評価回数で済みます。")
 
-        # プリセット選択
-        preset = st.radio(
-            "探索プリセット",
-            ["標準（推奨）", "高速", "精密"],
-            index=st.session_state.get("batch_adaptive_preset_idx", 0),
-            key="batch_adaptive_preset",
-            horizontal=True,
-            help="標準: バランス良し / 高速: 精度を犠牲に時短 / 精密: 時間かけて丁寧に探索",
-        )
-
-        # プリセットに応じてデフォルト値を設定
-        if preset == "高速":
-            preset_values = {
-                "scout_ratio": 0.1, "scout_top_n": 10,
-                "plateau_rounds": 1, "plateau_threshold": 0.002,
-                "max_rounds": 3, "top_n_survivors": 5, "exploration_ratio": 0.1,
-            }
-            st.session_state["batch_adaptive_preset_idx"] = 1
-        elif preset == "精密":
-            preset_values = {
-                "scout_ratio": 0.3, "scout_top_n": 30,
-                "plateau_rounds": 3, "plateau_threshold": 0.0005,
-                "max_rounds": 7, "top_n_survivors": 15, "exploration_ratio": 0.3,
-            }
-            st.session_state["batch_adaptive_preset_idx"] = 2
-        else:  # 標準
-            preset_values = {
-                "scout_ratio": 0.2, "scout_top_n": 20,
-                "plateau_rounds": 2, "plateau_threshold": 0.001,
-                "max_rounds": 5, "top_n_survivors": 10, "exploration_ratio": 0.2,
-            }
-            st.session_state["batch_adaptive_preset_idx"] = 0
-
-        # 詳細設定（折りたたみ）
-        with st.expander("詳細設定（カスタマイズ）", expanded=False):
-            col_s1, col_s2 = st.columns(2)
-
-            with col_s1:
-                st.markdown("**Scout設定**")
-                scout_ratio = st.slider(
-                    "Scoutデータ割合",
-                    min_value=0.1,
-                    max_value=0.5,
-                    value=st.session_state.get("batch_scout_ratio", preset_values["scout_ratio"]),
-                    step=0.05,
-                    key="batch_scout_ratio",
-                    help="全データの何%でScout探索するか（少ないほど速い）",
-                )
-                scout_top_n = st.number_input(
-                    "Scout→Scale持越し数",
-                    min_value=5,
-                    max_value=100,
-                    value=st.session_state.get("batch_scout_top_n", preset_values["scout_top_n"]),
-                    key="batch_scout_top_n",
-                    help="Scoutで有望だった上位N個をScaleフェーズに持ち越す",
-                )
-
-            with col_s2:
-                st.markdown("**プラトー検出**")
-                plateau_rounds = st.number_input(
-                    "連続未改善ラウンド数",
-                    min_value=1,
-                    max_value=5,
-                    value=st.session_state.get("batch_plateau_rounds", preset_values["plateau_rounds"]),
-                    key="batch_plateau_rounds",
-                    help="この回数連続で改善がなければ早期終了",
-                )
-                plateau_threshold = st.number_input(
-                    "改善閾値",
-                    min_value=0.0001,
-                    max_value=0.01,
-                    value=st.session_state.get("batch_plateau_threshold", preset_values["plateau_threshold"]),
-                    step=0.0001,
-                    format="%.4f",
-                    key="batch_plateau_threshold",
-                    help="この値より小さい改善は「改善なし」とみなす",
-                )
-
-            st.markdown("**ラウンド設定**")
-            col_r1, col_r2, col_r3 = st.columns(3)
-
-            with col_r1:
-                max_rounds = st.number_input(
-                    "最大ラウンド数",
-                    min_value=1,
-                    max_value=10,
-                    value=st.session_state.get("batch_max_rounds", preset_values["max_rounds"]),
-                    key="batch_max_rounds",
-                )
-
-            with col_r2:
-                top_n_survivors = st.number_input(
-                    "次ラウンド持越し数",
-                    min_value=3,
-                    max_value=30,
-                    value=st.session_state.get("batch_top_n_survivors", preset_values["top_n_survivors"]),
-                    key="batch_top_n_survivors",
-                    help="各ラウンドの上位N個を次ラウンドに持ち越す",
-                )
-
-            with col_r3:
-                exploration_ratio = st.slider(
-                    "新規探索割合",
-                    min_value=0.0,
-                    max_value=0.5,
-                    value=st.session_state.get("batch_exploration_ratio", preset_values["exploration_ratio"]),
-                    step=0.1,
-                    key="batch_exploration_ratio",
-                    help="各ラウンドで未テストのconfigを試す割合",
-                )
+        ga_col1, ga_col2, ga_col3, ga_col4 = st.columns(4)
+        with ga_col1:
+            ga_population = st.number_input(
+                "集団サイズ",
+                value=st.session_state.get("batch_ga_population", 20),
+                min_value=10,
+                max_value=100,
+                step=5,
+                key="batch_ga_population",
+                help="1世代あたりの個体数",
+            )
+        with ga_col2:
+            ga_generations = st.number_input(
+                "最大世代数",
+                value=st.session_state.get("batch_ga_generations", 10),
+                min_value=5,
+                max_value=50,
+                step=5,
+                key="batch_ga_generations",
+                help="進化を繰り返す最大回数",
+            )
+        with ga_col3:
+            ga_elite_ratio = st.slider(
+                "エリート率",
+                0.1, 0.5, st.session_state.get("batch_ga_elite", 0.25), 0.05,
+                key="batch_ga_elite",
+                help="次世代に引き継ぐ上位個体の割合",
+            )
+        with ga_col4:
+            ga_mutation_rate = st.slider(
+                "突然変異率",
+                0.05, 0.3, st.session_state.get("batch_ga_mutation", 0.15), 0.05,
+                key="batch_ga_mutation",
+                help="パラメータをランダムに変化させる確率",
+            )
 
 
 def _render_execution_summary(scan_result: Dict[str, Any]):
@@ -1021,9 +1163,11 @@ def _render_batch_progress():
     # 詳細進捗
     grid_current = progress.get("grid_current", 0)
     grid_total = progress.get("grid_total", 0)
+    search_method = st.session_state.get("batch_search_method", "grid")
+    search_label = "🧬 GA" if search_method == "ga" else "グリッドサーチ"
     if grid_total > 0:
         grid_pct = grid_current / grid_total
-        st.progress(grid_pct, text=f"グリッドサーチ: {grid_current:,}/{grid_total:,}")
+        st.progress(grid_pct, text=f"{search_label}: {grid_current:,}/{grid_total:,}")
 
     # 統計
     col1, col2, col3 = st.columns(3)
@@ -1054,12 +1198,28 @@ def _start_batch_optimization(scan_result: Dict[str, Any]):
     selected_exit_profiles = st.session_state.get("batch_selected_exit_profiles", [])
     selected_regimes = st.session_state.get("batch_selected_regimes", TARGET_REGIMES)
     use_oos = st.session_state.get("batch_use_oos", True)
+    use_blacklist = st.session_state.get("batch_use_blacklist", True)
     n_workers = st.session_state.get("batch_n_workers", 4)
     reuse_existing = st.session_state.get("batch_reuse_existing", True)
 
-    # 適応型探索の設定を取得
-    enable_adaptive = st.session_state.get("batch_enable_adaptive", False)
+    # 探索方法を取得
+    search_method = st.session_state.get("batch_search_method", "grid")
+
+    # GA設定
+    ga_config = None
+    if search_method == "ga":
+        ga_config = GAConfig(
+            population_size=st.session_state.get("batch_ga_population", 20),
+            max_generations=st.session_state.get("batch_ga_generations", 10),
+            elite_ratio=st.session_state.get("batch_ga_elite", 0.25),
+            mutation_rate=st.session_state.get("batch_ga_mutation", 0.15),
+            convergence_threshold=0.01,
+            convergence_generations=4,
+        )
+
+    # 適応型探索の設定を取得（グリッドサーチの場合のみ）
     adaptive_config = None
+    enable_adaptive = st.session_state.get("batch_enable_adaptive", False) if search_method == "grid" else False
 
     if enable_adaptive:
         adaptive_config = AdaptiveSearchConfig(
@@ -1141,13 +1301,16 @@ def _start_batch_optimization(scan_result: Dict[str, Any]):
     stats_placeholder = st.empty()
     cancel_placeholder = st.empty()
 
+    # 進捗ラベル（探索方法によって変更）
+    search_label = "🧬 GA" if search_method == "ga" else "グリッドサーチ"
+
     # 初期状態を表示
     with progress_placeholder.container():
         st.progress(0.0, text=f"全体進捗: 0/{len(jobs)} (0%)")
     with grid_progress_placeholder.container():
-        st.progress(0.0, text="グリッドサーチ: データ読み込み中...")
+        st.progress(0.0, text=f"{search_label}: データ読み込み中...")
     with status_placeholder.container():
-        st.markdown(f"**🚀 バッチ最適化開始** - {len(jobs)}件のジョブを実行します")
+        st.markdown(f"**🚀 バッチ最適化開始** - {len(jobs)}件のジョブを実行します ({search_label})")
     with stats_placeholder.container():
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -1163,13 +1326,13 @@ def _start_batch_optimization(scan_result: Dict[str, Any]):
             st.rerun()
 
     def update_progress(completed: int, total: int, desc: str):
-        """グリッドサーチの進捗コールバック"""
+        """進捗コールバック"""
         st.session_state.batch_progress["grid_current"] = completed
         st.session_state.batch_progress["grid_total"] = total
         # リアルタイムでプレースホルダーを更新
         if total > 0:
             grid_pct = completed / total
-            grid_progress_placeholder.progress(grid_pct, text=f"グリッドサーチ: {completed:,}/{total:,}")
+            grid_progress_placeholder.progress(grid_pct, text=f"{search_label}: {completed:,}/{total:,}")
 
     # 実行ループ
     for i, job in enumerate(jobs):
@@ -1197,27 +1360,53 @@ def _start_batch_optimization(scan_result: Dict[str, Any]):
             tf_dict = load_symbol_data(symbol, period, exec_tf, htf, files)
             exec_df = prepare_exec_df(tf_dict, exec_tf, htf)
 
-            # 最適化実行
-            result = run_single_optimization(
-                exec_df=exec_df,
-                all_configs=all_configs,
-                use_oos=use_oos,
-                n_workers=n_workers,
-                target_regimes=selected_regimes,
-                progress_callback=update_progress,
-                adaptive_config=adaptive_config,
-            )
+            if search_method == "ga":
+                # GA最適化実行（OOS検証付き）
+                ga_results = run_single_ga_optimization(
+                    exec_df=exec_df,
+                    templates=selected_templates,
+                    target_regimes=selected_regimes,
+                    ga_config=ga_config,
+                    symbol=symbol,
+                    progress_callback=update_progress,
+                    use_oos=use_oos,
+                    use_blacklist=use_blacklist,
+                )
 
-            # 結果保存
-            save_batch_result(
-                result=result,
-                symbol=symbol,
-                period=period,
-                exec_tf=exec_tf,
-                htf=htf,
-                use_oos=use_oos,
-                output_dir=output_dir,
-            )
+                # GA結果保存
+                for ga_result in ga_results:
+                    ga_result.save(str(output_dir))
+
+                # GA進捗を完了状態に更新
+                total_gens = len(selected_regimes) * ga_config.max_generations
+                st.session_state.batch_progress["grid_current"] = total_gens
+                st.session_state.batch_progress["grid_total"] = total_gens
+                grid_progress_placeholder.progress(1.0, text=f"{search_label}: 完了")
+
+                result = None  # GAは別形式で保存
+
+            else:
+                # グリッドサーチ最適化実行
+                result = run_single_optimization(
+                    exec_df=exec_df,
+                    all_configs=all_configs,
+                    use_oos=use_oos,
+                    n_workers=n_workers,
+                    target_regimes=selected_regimes,
+                    progress_callback=update_progress,
+                    adaptive_config=adaptive_config,
+                )
+
+                # 結果保存
+                save_batch_result(
+                    result=result,
+                    symbol=symbol,
+                    period=period,
+                    exec_tf=exec_tf,
+                    htf=htf,
+                    use_oos=use_oos,
+                    output_dir=output_dir,
+                )
 
             st.session_state.batch_progress["completed"] += 1
 
@@ -1236,9 +1425,9 @@ def _start_batch_optimization(scan_result: Dict[str, Any]):
             grid_total = st.session_state.batch_progress.get("grid_total", 0)
             if grid_total > 0:
                 grid_pct = grid_current / grid_total
-                st.progress(grid_pct, text=f"グリッドサーチ: {grid_current:,}/{grid_total:,}")
+                st.progress(grid_pct, text=f"{search_label}: {grid_current:,}/{grid_total:,}")
             else:
-                st.progress(0.0, text="グリッドサーチ: 準備中...")
+                st.progress(0.0, text=f"{search_label}: 準備中...")
 
         with status_placeholder.container():
             st.markdown(f"**現在処理中:** {st.session_state.batch_progress['status']}")
@@ -1289,6 +1478,10 @@ def list_batch_result_dirs() -> List[Dict[str, Any]]:
         if not json_files:
             continue
 
+        # GA結果かどうかを判定（ga_で始まるファイルがあるか）
+        ga_files = [f for f in json_files if f.name.startswith("ga_")]
+        is_ga = len(ga_files) > 0
+
         # 最初のJSONから情報を取得
         try:
             with open(json_files[0], "r", encoding="utf-8") as f:
@@ -1299,9 +1492,16 @@ def list_batch_result_dirs() -> List[Dict[str, Any]]:
         # ファイルからシンボル一覧を抽出
         symbols = set()
         for jf in json_files:
-            parts = jf.stem.split("_")
-            if parts:
-                symbols.add(parts[0])
+            if jf.name.startswith("ga_"):
+                # GA形式: ga_BTCUSDT_uptrend_20260205_180454.json
+                parts = jf.stem.split("_")
+                if len(parts) >= 2:
+                    symbols.add(parts[1])
+            else:
+                # グリッドサーチ形式: BTCUSDT_20250201-20260130_15m_1h.json
+                parts = jf.stem.split("_")
+                if parts:
+                    symbols.add(parts[0])
 
         # 日時をパース
         dt_str = d.name  # 20260204_174904
@@ -1314,6 +1514,7 @@ def list_batch_result_dirs() -> List[Dict[str, Any]]:
             "file_count": len(json_files),
             "symbols": sorted(symbols),
             "oos": sample.get("oos", False),
+            "is_ga": is_ga,  # GA結果かどうか
         })
 
     return result_dirs
@@ -1335,9 +1536,129 @@ def load_batch_result_files(dir_path: Path) -> List[Dict[str, Any]]:
     return results
 
 
+def _render_blacklist_management():
+    """ブラックリスト管理UI"""
+    st.markdown("### 🚫 ブラックリスト管理")
+    st.caption("OOS検証でFAILした組み合わせ（銘柄 × レジーム × テンプレート）を管理")
+
+    blacklist = get_blacklist()
+
+    if not blacklist.entries:
+        st.info("ブラックリストは空です。OOS検証でFAILすると自動的に追加されます。")
+        return
+
+    # サマリー表示
+    summary = blacklist.summary()
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("合計", summary["total"])
+    with col2:
+        regime_str = ", ".join(f"{k}: {v}" for k, v in summary["by_regime"].items())
+        st.metric("レジーム別", regime_str or "—")
+    with col3:
+        top_templates = sorted(summary["by_template"].items(), key=lambda x: -x[1])[:3]
+        template_str = ", ".join(f"{k}: {v}" for k, v in top_templates)
+        st.metric("Top3テンプレート", template_str or "—")
+
+    # 一覧表示
+    st.markdown("---")
+    df_blacklist = pd.DataFrame([
+        {
+            "銘柄": e.symbol,
+            "レジーム": e.regime,
+            "テンプレート": e.template,
+            "Test PnL": f"{e.test_pnl:.2f}%" if e.test_pnl is not None else "—",
+            "Train PnL": f"{e.train_pnl:.2f}%" if e.train_pnl is not None else "—",
+            "追加日": e.added_at,
+            "理由": e.reason,
+        }
+        for e in blacklist.entries
+    ])
+
+    # フィルタ
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        filter_regime = st.selectbox(
+            "レジームでフィルタ",
+            options=["すべて"] + list(set(e.regime for e in blacklist.entries)),
+            key="blacklist_filter_regime",
+        )
+    with col2:
+        filter_symbol = st.selectbox(
+            "銘柄でフィルタ",
+            options=["すべて"] + sorted(set(e.symbol for e in blacklist.entries)),
+            key="blacklist_filter_symbol",
+        )
+    with col3:
+        filter_template = st.selectbox(
+            "テンプレートでフィルタ",
+            options=["すべて"] + sorted(set(e.template for e in blacklist.entries)),
+            key="blacklist_filter_template",
+        )
+
+    # フィルタ適用
+    df_filtered = df_blacklist.copy()
+    if filter_regime != "すべて":
+        df_filtered = df_filtered[df_filtered["レジーム"] == filter_regime]
+    if filter_symbol != "すべて":
+        df_filtered = df_filtered[df_filtered["銘柄"] == filter_symbol]
+    if filter_template != "すべて":
+        df_filtered = df_filtered[df_filtered["テンプレート"] == filter_template]
+
+    st.dataframe(df_filtered, use_container_width=True, hide_index=True)
+
+    # 削除機能
+    st.markdown("---")
+    st.markdown("#### ⚠️ エントリ削除")
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        delete_options = [
+            f"{e.symbol} / {e.regime} / {e.template}"
+            for e in blacklist.entries
+        ]
+        selected_delete = st.multiselect(
+            "削除するエントリを選択",
+            options=delete_options,
+            key="blacklist_delete_select",
+        )
+    with col2:
+        if st.button("🗑️ 選択を削除", type="secondary", disabled=not selected_delete):
+            for item in selected_delete:
+                parts = item.split(" / ")
+                if len(parts) == 3:
+                    blacklist.remove(parts[0], parts[1], parts[2])
+            blacklist.save()
+            st.success(f"{len(selected_delete)}件を削除しました")
+            st.rerun()
+
+    # 全削除
+    with st.expander("⚠️ 全削除（注意）"):
+        if st.button("🗑️ ブラックリストを全削除", type="secondary"):
+            count = blacklist.clear()
+            blacklist.save()
+            st.success(f"{count}件を削除しました")
+            st.rerun()
+
+
 def render_batch_load_view():
     """バッチ結果読み込み・表示ビューを描画"""
     st.subheader("📁 バッチ結果読み込み")
+
+    # サブビュー切り替え
+    sub_view = st.radio(
+        "表示",
+        options=["📂 結果一覧", "🚫 ブラックリスト"],
+        horizontal=True,
+        key="batch_load_sub_view",
+    )
+
+    st.markdown("---")
+
+    if sub_view == "🚫 ブラックリスト":
+        _render_blacklist_management()
+        return
+
+    # --- 結果一覧ビュー ---
     st.caption("保存されたバッチ最適化結果を閲覧")
 
     # 結果ディレクトリ一覧を取得
@@ -1380,7 +1701,7 @@ def render_batch_load_view():
             "結果を選択",
             options=[d["name"] for d in result_dirs],
             format_func=lambda x: next(
-                f"{d['datetime']} | {d['file_count']}件 | {', '.join(d['symbols'][:3])}{'...' if len(d['symbols']) > 3 else ''}"
+                f"{d['datetime']} | {d['file_count']}件 | {'ga' if d.get('is_ga') else 'grid'}"
                 for d in result_dirs if d["name"] == x
             ),
             key="batch_load_selector",
@@ -1394,7 +1715,208 @@ def render_batch_load_view():
 
     # --- 読み込み済みデータの表示 ---
     if st.session_state.batch_load_data:
-        _render_batch_results_detail()
+        selected = st.session_state.batch_load_selected
+        if selected.get("is_ga"):
+            _render_ga_results_detail()
+        else:
+            _render_batch_results_detail()
+
+
+def _render_ga_results_detail():
+    """GA結果の詳細を表示"""
+    data_list = st.session_state.batch_load_data
+    selected = st.session_state.batch_load_selected
+
+    st.divider()
+    st.markdown(f"### 🧬 GA結果: {selected['datetime']}")
+    st.caption(f"{len(data_list)}件のGA結果")
+
+    # GA結果をテーブルに整形
+    table_data = []
+    has_oos = False  # OOS検証結果があるかどうか
+
+    for data in data_list:
+        if "final_winner" not in data:
+            continue  # GA結果でない場合はスキップ
+
+        winner = data.get("final_winner", {})
+
+        # OOS検証結果の有無を確認
+        has_verdict = "verdict" in winner
+        if has_verdict:
+            has_oos = True
+
+        row = {
+            "銘柄": data.get("symbol", "?"),
+            "レジーム": data.get("regime", "?"),
+            "テンプレート": winner.get("template", "?"),
+        }
+
+        trades = winner.get("trades", 0)
+
+        # OOS検証結果がある場合
+        if has_verdict:
+            verdict = winner.get("verdict", "?")
+            train_pnl = winner.get("train_pnl", 0)
+            test_pnl = winner.get("test_pnl", 0)
+
+            # 安定度 (Test/Train比率)
+            if train_pnl > 0:
+                stability = test_pnl / train_pnl
+            elif train_pnl < 0 and test_pnl > 0:
+                stability = 2.0  # Train負け→Test勝ちは高評価
+            else:
+                stability = 0.0
+
+            # 採用スコア計算
+            # Test PnL × 0.4 + 安定度 × 0.3 + トレード数正規化 × 0.3
+            test_pnl_score = max(0, min(test_pnl / 30, 1.0))  # 30%で満点
+            stability_score = max(0, min(stability, 1.0))  # 1.0で満点
+            trades_score = min(trades / 100, 1.0)  # 100回で満点
+            adoption_score = test_pnl_score * 0.4 + stability_score * 0.3 + trades_score * 0.3
+
+            row["Test PnL"] = f"{test_pnl:+.2f}%"
+            row["安定度"] = f"{stability:.2f}"
+            row["トレード数"] = trades
+            row["採用スコア"] = round(adoption_score, 2)
+            row["採用"] = "⭐" if verdict == "PASS" and adoption_score >= 0.5 else "—"
+            row["判定"] = verdict
+            row["_test_pnl"] = test_pnl  # ソート用（非表示）
+            row["_adoption_score"] = adoption_score  # ソート用（非表示）
+        else:
+            row["PnL (%)"] = f"{winner.get('pnl', 0):+.2f}%"
+            row["トレード数"] = trades
+            row["_test_pnl"] = winner.get("pnl", 0)
+            row["_adoption_score"] = 0
+
+        table_data.append(row)
+
+    if not table_data:
+        st.warning("該当する結果がありません")
+        return
+
+    df = pd.DataFrame(table_data)
+
+    # フィルタリング
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        symbols = ["すべて"] + sorted(df["銘柄"].unique().tolist())
+        filter_symbol = st.selectbox("銘柄", options=symbols, key="ga_filter_symbol")
+    with col2:
+        regimes = ["すべて"] + sorted(df["レジーム"].unique().tolist())
+        filter_regime = st.selectbox("レジーム", options=regimes, key="ga_filter_regime")
+    with col3:
+        # 判定フィルタ（OOS結果がある場合のみ）
+        if has_oos:
+            verdict_options = ["すべて", "PASSのみ", "FAILのみ"]
+            filter_verdict = st.selectbox("判定", options=verdict_options, key="ga_filter_verdict")
+        else:
+            filter_verdict = "すべて"
+    with col4:
+        min_trades = st.number_input(
+            "最小トレード数",
+            min_value=0,
+            max_value=100,
+            value=0,
+            step=5,
+            key="ga_filter_min_trades",
+        )
+
+    # フィルタ適用
+    filtered = df.copy()
+    if filter_symbol != "すべて":
+        filtered = filtered[filtered["銘柄"] == filter_symbol]
+    if filter_regime != "すべて":
+        filtered = filtered[filtered["レジーム"] == filter_regime]
+    if has_oos and filter_verdict == "PASSのみ":
+        filtered = filtered[filtered["判定"] == "PASS"]
+    elif has_oos and filter_verdict == "FAILのみ":
+        filtered = filtered[filtered["判定"] == "FAIL"]
+    if min_trades > 0:
+        filtered = filtered[filtered["トレード数"] >= min_trades]
+
+    # 採用スコア順でソート（OOS結果がある場合）
+    if has_oos and "_adoption_score" in filtered.columns:
+        filtered = filtered.sort_values("_adoption_score", ascending=False)
+
+    # 非表示列を除外
+    display_cols = [c for c in filtered.columns if not c.startswith("_")]
+    display_df = filtered[display_cols]
+
+    # 件数表示
+    st.caption(f"表示: {len(display_df)}件 / 全{len(df)}件")
+    st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+    # 世代推移チャート
+    with st.expander("📈 世代ごとのスコア推移", expanded=False):
+        for data in data_list:
+            if "generations" not in data:
+                continue
+            symbol = data.get("symbol", "?")
+            regime = data.get("regime", "?")
+            if filter_symbol != "すべて" and symbol != filter_symbol:
+                continue
+            if filter_regime != "すべて" and regime != filter_regime:
+                continue
+
+            st.caption(f"**{symbol} - {regime}**")
+            gen_data = []
+            for gen in data.get("generations", []):
+                gen_data.append({
+                    "世代": gen.get("generation", 0),
+                    "ベストスコア": gen.get("best_score", 0),
+                    "平均スコア": gen.get("avg_score", 0),
+                })
+            if gen_data:
+                chart_df = pd.DataFrame(gen_data)
+                st.line_chart(chart_df.set_index("世代"))
+
+    # 採用候補をグリッドサーチボタン
+    if has_oos:
+        st.divider()
+        st.markdown("### 🔬 採用候補をグリッドサーチ")
+
+        # 採用候補を抽出（⭐のもの）
+        adopted_rows = filtered[filtered["採用"] == "⭐"] if "採用" in filtered.columns else pd.DataFrame()
+        n_adopted = len(adopted_rows)
+
+        if n_adopted == 0:
+            st.info("採用候補（⭐）がありません。フィルタを調整してください。")
+        else:
+            # 採用候補の銘柄とテンプレートを抽出
+            adopted_symbols = adopted_rows["銘柄"].unique().tolist()
+            adopted_templates = adopted_rows["テンプレート"].unique().tolist()
+
+            st.caption(f"採用候補: {n_adopted}件 | 銘柄: {len(adopted_symbols)}種 | テンプレート: {len(adopted_templates)}種")
+
+            col1, col2 = st.columns([2, 1])
+            with col1:
+                st.markdown(f"**銘柄:** {', '.join(adopted_symbols[:10])}{'...' if len(adopted_symbols) > 10 else ''}")
+                st.markdown(f"**テンプレート:** {', '.join(adopted_templates[:5])}{'...' if len(adopted_templates) > 5 else ''}")
+
+            with col2:
+                if st.button("🚀 グリッドサーチ開始", type="primary", use_container_width=True):
+                    # 採用候補リストをsession_stateに保存
+                    st.session_state.ga_adopted_candidates = {
+                        "symbols": adopted_symbols,
+                        "templates": adopted_templates,
+                        "source": selected["datetime"],
+                    }
+                    # グリッドサーチモードをセット
+                    st.session_state.batch_search_method = "grid"
+                    st.session_state.batch_from_ga_candidates = True
+                    # 自動実行フラグ
+                    st.session_state.batch_auto_start = True
+
+                    # 既存のチェックボックス状態をクリア（GA候補のdefault値を有効にするため）
+                    keys_to_delete = [k for k in st.session_state.keys()
+                                      if k.startswith("batch_symbol_") or k.startswith("batch_template_")]
+                    for k in keys_to_delete:
+                        del st.session_state[k]
+
+                    # バッチタブに自動遷移
+                    st.session_state.optimizer_view = "batch"
+                    st.rerun()
 
 
 def _render_batch_results_detail():
@@ -1466,6 +1988,17 @@ def _render_batch_summary_view(data_list: List[Dict], filter_regime: str):
                 if filter_regime != "すべて" and regime != filter_regime:
                     continue
 
+                pnl = entry.get("metrics", {}).get("total_pnl", 0)
+                trades = entry.get("metrics", {}).get("trades", 0)
+
+                # 採用スコア計算
+                pnl_score = max(0, min(pnl / 30, 1.0))  # 30%で満点
+                trades_score = min(trades / 100, 1.0)  # 100回で満点
+                adoption_score = pnl_score * 0.5 + trades_score * 0.5
+
+                # 採用判定: PnL > 0 かつ 取引数 >= 30 かつ 採用スコア >= 0.3
+                is_adopted = pnl > 0 and trades >= 30 and adoption_score >= 0.3
+
                 summary_rows.append({
                     "銘柄": symbol,
                     "期間": period,
@@ -1476,9 +2009,11 @@ def _render_batch_summary_view(data_list: List[Dict], filter_regime: str):
                     "スコア": entry.get("score", 0),
                     "勝率": entry.get("metrics", {}).get("win_rate", 0),
                     "PF": entry.get("metrics", {}).get("profit_factor", 0),
-                    "PnL%": entry.get("metrics", {}).get("total_pnl", 0),
+                    "PnL%": pnl,
                     "DD%": entry.get("metrics", {}).get("max_dd", 0),
-                    "取引数": entry.get("metrics", {}).get("trades", 0),
+                    "取引数": trades,
+                    "採用スコア": round(adoption_score, 2),
+                    "採用": "⭐" if is_adopted else "—",
                 })
         elif "results" in data:
             # 通常結果
@@ -1487,6 +2022,14 @@ def _render_batch_summary_view(data_list: List[Dict], filter_regime: str):
                 if filter_regime != "すべて" and regime != filter_regime:
                     continue
 
+                pnl = entry.get("metrics", {}).get("total_pnl", 0)
+                trades = entry.get("metrics", {}).get("trades", 0)
+
+                # 採用スコア計算（OOSなしの場合は参考値）
+                pnl_score = max(0, min(pnl / 30, 1.0))
+                trades_score = min(trades / 100, 1.0)
+                adoption_score = pnl_score * 0.5 + trades_score * 0.5
+
                 summary_rows.append({
                     "銘柄": symbol,
                     "期間": period,
@@ -1497,9 +2040,11 @@ def _render_batch_summary_view(data_list: List[Dict], filter_regime: str):
                     "スコア": entry.get("score", 0),
                     "勝率": entry.get("metrics", {}).get("win_rate", 0),
                     "PF": entry.get("metrics", {}).get("profit_factor", 0),
-                    "PnL%": entry.get("metrics", {}).get("total_pnl", 0),
+                    "PnL%": pnl,
                     "DD%": entry.get("metrics", {}).get("max_dd", 0),
-                    "取引数": entry.get("metrics", {}).get("trades", 0),
+                    "取引数": trades,
+                    "採用スコア": round(adoption_score, 2),
+                    "採用": "—",  # OOSなしは採用判定しない
                 })
 
     if not summary_rows:
@@ -1508,11 +2053,29 @@ def _render_batch_summary_view(data_list: List[Dict], filter_regime: str):
 
     df = pd.DataFrame(summary_rows)
 
-    # スコア順でソート
-    df = df.sort_values("スコア", ascending=False)
+    # 採用スコア順でソート
+    df = df.sort_values("採用スコア", ascending=False)
+
+    # フィルターオプション
+    col_f1, col_f2 = st.columns(2)
+    with col_f1:
+        filter_adopted = st.checkbox("採用候補のみ表示", value=False, key="batch_result_filter_adopted")
+    with col_f2:
+        min_trades = st.number_input("最小取引数", min_value=0, value=0, step=10, key="batch_result_min_trades")
+
+    # フィルタ適用
+    filtered_df = df.copy()
+    if filter_adopted:
+        filtered_df = filtered_df[filtered_df["採用"] == "⭐"]
+    if min_trades > 0:
+        filtered_df = filtered_df[filtered_df["取引数"] >= min_trades]
+
+    # 採用候補の件数を表示
+    n_adopted = len(df[df["採用"] == "⭐"])
+    st.caption(f"表示: {len(filtered_df)}件 / 全{len(df)}件 | 採用候補: {n_adopted}件")
 
     st.dataframe(
-        df,
+        filtered_df,
         use_container_width=True,
         hide_index=True,
         column_config={
@@ -1521,6 +2084,7 @@ def _render_batch_summary_view(data_list: List[Dict], filter_regime: str):
             "PF": st.column_config.NumberColumn(format="%.2f"),
             "PnL%": st.column_config.NumberColumn(format="%.2f%%"),
             "DD%": st.column_config.NumberColumn(format="%.2f%%"),
+            "採用スコア": st.column_config.NumberColumn(format="%.2f"),
         },
     )
 

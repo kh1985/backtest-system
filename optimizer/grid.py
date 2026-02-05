@@ -303,10 +303,16 @@ class IndicatorCache:
         self._cache: OrderedDict[str, pd.DataFrame] = OrderedDict()
         self._maxsize = maxsize
 
-    def get_key(self, indicator_configs: List[Dict]) -> str:
-        """インジケーター設定からキャッシュキーを生成"""
+    def get_key(self, indicator_configs: List[Dict], df_size: int = 0) -> str:
+        """インジケーター設定からキャッシュキーを生成
+
+        Args:
+            indicator_configs: インジケーター設定
+            df_size: DataFrameのサイズ（異なるデータセットを区別するため）
+        """
         serialized = json.dumps(indicator_configs, sort_keys=True)
-        return hashlib.md5(serialized.encode()).hexdigest()
+        key_data = f"{serialized}_{df_size}"
+        return hashlib.md5(key_data.encode()).hexdigest()
 
     def get(self, key: str) -> Optional[pd.DataFrame]:
         if key in self._cache:
@@ -607,7 +613,7 @@ class GridSearchOptimizer:
         else:
             # 通常モード: キャッシュ利用 — 全データで計算
             indicator_configs = config.get("indicators", [])
-            cache_key = self._indicator_cache.get_key(indicator_configs)
+            cache_key = self._indicator_cache.get_key(indicator_configs, df_size=len(df))
             cached_df = self._indicator_cache.get(cache_key)
 
             if cached_df is not None:

@@ -20,6 +20,7 @@ from analysis.trend import TrendDetector, TrendRegime
 from optimizer.templates import BUILTIN_TEMPLATES, ParameterRange
 from optimizer.scoring import ScoringWeights, detect_overfitting_warnings
 from optimizer.grid import GridSearchOptimizer
+from optimizer.genetic import GeneticOptimizer, GAConfig, GAResult
 from optimizer.validation import (
     DataSplitConfig,
     ValidatedResultSet,
@@ -432,7 +433,68 @@ def _render_config_view():
 
     st.divider()
 
-    # --- 5. 検証モード ---
+    # --- 5. 探索方法 ---
+    section_header("🔍", "探索方法", "パラメータ探索のアルゴリズム")
+
+    search_method = st.radio(
+        "探索方法",
+        options=["grid", "ga"],
+        format_func=lambda x: {
+            "grid": "グリッドサーチ（全組み合わせ）",
+            "ga": "遺伝的アルゴリズム（効率的探索）",
+        }[x],
+        horizontal=True,
+        key="opt_search_method",
+        index=0,
+    )
+
+    # GA設定
+    ga_population = 20
+    ga_generations = 10
+    ga_elite_ratio = 0.25
+    ga_mutation_rate = 0.15
+
+    if search_method == "ga":
+        st.info("💡 GAは全パラメータ組み合わせを試さず、進化的に良い解を探索します。グリッドサーチの1/3〜1/5の評価回数で済みます。")
+        ga_col1, ga_col2, ga_col3, ga_col4 = st.columns(4)
+        with ga_col1:
+            ga_population = st.number_input(
+                "集団サイズ",
+                value=20,
+                min_value=10,
+                max_value=100,
+                step=5,
+                key="opt_ga_population",
+                help="1世代あたりの個体数（多いほど探索範囲が広い）",
+            )
+        with ga_col2:
+            ga_generations = st.number_input(
+                "最大世代数",
+                value=10,
+                min_value=5,
+                max_value=50,
+                step=5,
+                key="opt_ga_generations",
+                help="進化を繰り返す最大回数（収束すれば早期終了）",
+            )
+        with ga_col3:
+            ga_elite_ratio = st.slider(
+                "エリート率",
+                0.1, 0.5, 0.25, 0.05,
+                key="opt_ga_elite",
+                help="次世代に引き継ぐ上位個体の割合",
+            )
+        with ga_col4:
+            ga_mutation_rate = st.slider(
+                "突然変異率",
+                0.05, 0.3, 0.15, 0.05,
+                key="opt_ga_mutation",
+                help="パラメータをランダムに変化させる確率",
+            )
+
+    st.divider()
+
+    # --- 6. 検証モード ---
     section_header("🛡️", "検証設定", "過学習防止のための検証方式")
 
     validation_mode = st.radio(
@@ -550,9 +612,17 @@ def _render_config_view():
     with scol2:
         st.metric("レジーム", f"{len(target_regimes)}")
     with scol3:
-        st.metric("組合せ数", f"{total_combinations:,}")
+        if search_method == "ga":
+            # GAの場合は推定評価回数を表示
+            ga_est_evals = ga_population * ga_generations * len(target_regimes)
+            st.metric("推定評価数", f"~{ga_est_evals:,}")
+        else:
+            st.metric("組合せ数", f"{total_combinations:,}")
     with scol4:
-        st.metric("総実行数", f"{total_runs:,}")
+        if search_method == "ga":
+            st.metric("探索方法", "GA")
+        else:
+            st.metric("総実行数", f"{total_runs:,}")
 
     if st.button("🚀 最適化実行", type="primary", use_container_width=True):
         if not selected_templates:
@@ -562,35 +632,59 @@ def _render_config_view():
             st.error("レジームを1つ以上選択してください")
             return
 
-        _run_optimization(
-            exec_tf=exec_tf,
-            htf=htf,
-            trend_method=trend_method,
-            target_regimes=target_regimes,
-            selected_templates=selected_templates,
-            custom_ranges=custom_ranges,
-            scoring_weights=ScoringWeights(w_pf, w_wr, w_dd, w_sh, w_ret),
-            initial_capital=initial_capital,
-            commission=commission,
-            slippage=slippage,
-            ma_fast=int(ma_fast),
-            ma_slow=int(ma_slow),
-            adx_period=int(adx_period),
-            adx_trend_th=float(adx_trend_th),
-            adx_range_th=float(adx_range_th),
-            n_workers=int(n_workers),
-            validation_mode=validation_mode,
-            oos_train_pct=oos_train_pct,
-            oos_val_pct=oos_val_pct,
-            oos_top_n=int(oos_top_n),
-            oos_min_trades=int(oos_min_trades),
-            wfa_n_folds=int(wfa_n_folds),
-            wfa_min_is_pct=int(wfa_min_is_pct),
-            wfa_use_val=wfa_use_val,
-            wfa_val_pct=int(wfa_val_pct),
-            wfa_top_n=int(wfa_top_n),
-            wfa_min_trades=int(wfa_min_trades),
-        )
+        if search_method == "ga":
+            # GA実行
+            _run_ga_optimization(
+                exec_tf=exec_tf,
+                htf=htf,
+                trend_method=trend_method,
+                target_regimes=target_regimes,
+                selected_templates=selected_templates,
+                scoring_weights=ScoringWeights(w_pf, w_wr, w_dd, w_sh, w_ret),
+                initial_capital=initial_capital,
+                commission=commission,
+                slippage=slippage,
+                ma_fast=int(ma_fast),
+                ma_slow=int(ma_slow),
+                adx_period=int(adx_period),
+                adx_trend_th=float(adx_trend_th),
+                adx_range_th=float(adx_range_th),
+                ga_population=int(ga_population),
+                ga_generations=int(ga_generations),
+                ga_elite_ratio=float(ga_elite_ratio),
+                ga_mutation_rate=float(ga_mutation_rate),
+            )
+        else:
+            # グリッドサーチ実行
+            _run_optimization(
+                exec_tf=exec_tf,
+                htf=htf,
+                trend_method=trend_method,
+                target_regimes=target_regimes,
+                selected_templates=selected_templates,
+                custom_ranges=custom_ranges,
+                scoring_weights=ScoringWeights(w_pf, w_wr, w_dd, w_sh, w_ret),
+                initial_capital=initial_capital,
+                commission=commission,
+                slippage=slippage,
+                ma_fast=int(ma_fast),
+                ma_slow=int(ma_slow),
+                adx_period=int(adx_period),
+                adx_trend_th=float(adx_trend_th),
+                adx_range_th=float(adx_range_th),
+                n_workers=int(n_workers),
+                validation_mode=validation_mode,
+                oos_train_pct=oos_train_pct,
+                oos_val_pct=oos_val_pct,
+                oos_top_n=int(oos_top_n),
+                oos_min_trades=int(oos_min_trades),
+                wfa_n_folds=int(wfa_n_folds),
+                wfa_min_is_pct=int(wfa_min_is_pct),
+                wfa_use_val=wfa_use_val,
+                wfa_val_pct=int(wfa_val_pct),
+                wfa_top_n=int(wfa_top_n),
+                wfa_min_trades=int(wfa_min_trades),
+            )
 
     # --- バッチ実行 ---
     _render_batch_section(
@@ -1208,6 +1302,161 @@ def _execute_wfa_optimization(
             entry.warnings = detect_overfitting_warnings(entry.metrics)
 
     return wfa_result
+
+
+def _run_ga_optimization(
+    exec_tf, htf, trend_method, target_regimes,
+    selected_templates, scoring_weights,
+    initial_capital, commission, slippage,
+    ma_fast, ma_slow, adx_period, adx_trend_th, adx_range_th,
+    ga_population=20,
+    ga_generations=10,
+    ga_elite_ratio=0.25,
+    ga_mutation_rate=0.15,
+):
+    """GA最適化実行（UIラッパー）"""
+    progress_bar = st.progress(0, text="GA最適化を開始...")
+    start_time = time.time()
+
+    # データ準備
+    tf_dict = st.session_state.ohlcv_dict
+    exec_ohlcv = tf_dict[exec_tf]
+    df = exec_ohlcv.df.copy()
+
+    # 選択中のシンボル取得
+    selected_symbol = st.session_state.get("opt_symbol", "UNKNOWN")
+
+    # トレンドラベル追加
+    progress_bar.progress(0.05, text="トレンドラベル追加中...")
+    if htf and htf in tf_dict:
+        htf_ohlcv = tf_dict[htf]
+        htf_df = htf_ohlcv.df.copy()
+        detector = TrendDetector()
+
+        if trend_method == "ma_cross":
+            htf_df = detector.detect_ma_cross(
+                htf_df, fast_period=ma_fast, slow_period=ma_slow
+            )
+        elif trend_method == "adx":
+            htf_df = detector.detect_adx(
+                htf_df, adx_period=adx_period,
+                trend_threshold=adx_trend_th, range_threshold=adx_range_th
+            )
+        else:
+            htf_df = detector.detect_combined(
+                htf_df, ma_fast=ma_fast, ma_slow=ma_slow,
+                adx_period=adx_period, adx_trend_threshold=adx_trend_th
+            )
+
+        # 上位TFラベルを実行TFにマージ
+        df = detector.merge_htf_labels(df, htf_df, "trend_regime")
+    else:
+        # 単一TF
+        detector = TrendDetector()
+        if trend_method == "ma_cross":
+            df = detector.detect_ma_cross(df, fast_period=ma_fast, slow_period=ma_slow)
+        elif trend_method == "adx":
+            df = detector.detect_adx(
+                df, adx_period=adx_period,
+                trend_threshold=adx_trend_th, range_threshold=adx_range_th
+            )
+        else:
+            df = detector.detect_combined(
+                df, ma_fast=ma_fast, ma_slow=ma_slow,
+                adx_period=adx_period, adx_trend_threshold=adx_trend_th
+            )
+
+    # trend_regime → trend_label にリネーム（GAが期待するカラム名）
+    if "trend_regime" in df.columns:
+        df["trend_label"] = df["trend_regime"]
+
+    # GA設定
+    ga_config = GAConfig(
+        population_size=ga_population,
+        max_generations=ga_generations,
+        elite_ratio=ga_elite_ratio,
+        mutation_rate=ga_mutation_rate,
+        convergence_threshold=0.01,
+        convergence_generations=4,
+    )
+
+    # GAオプティマイザー作成
+    optimizer = GeneticOptimizer(
+        templates=selected_templates,
+        ga_config=ga_config,
+        scoring_weights=scoring_weights,
+        initial_capital=initial_capital,
+        commission_pct=commission,
+        slippage_pct=slippage,
+    )
+
+    # 各レジームでGA実行
+    all_ga_results = []
+    total_regimes = len(target_regimes)
+
+    for i, regime in enumerate(target_regimes):
+        def on_progress(gen, max_gen, desc):
+            base_pct = (i / total_regimes) * 0.9 + 0.1
+            gen_pct = (gen / max_gen) * (0.9 / total_regimes)
+            elapsed = time.time() - start_time
+            progress_bar.progress(
+                min(base_pct + gen_pct, 1.0),
+                text=f"🧬 GA [{regime}] 世代 {gen}/{max_gen} ({elapsed:.1f}s)",
+            )
+
+        ga_result = optimizer.run(
+            df=df,
+            target_regime=regime,
+            symbol=selected_symbol,
+            progress_callback=on_progress,
+        )
+        all_ga_results.append(ga_result)
+
+        # 結果をJSON保存
+        ga_result.save("results")
+
+    progress_bar.progress(1.0, text="GA最適化完了!")
+
+    # 結果サマリーを表示
+    elapsed = time.time() - start_time
+    st.success(f"✅ GA最適化完了 ({elapsed:.1f}秒)")
+
+    # 結果テーブル
+    st.subheader("🏆 GA最適化結果")
+    result_data = []
+    for ga_result in all_ga_results:
+        w = ga_result.final_winner
+        result_data.append({
+            "レジーム": ga_result.regime,
+            "テンプレート": w["template"],
+            "パラメータ": str(w["params"]),
+            "PnL (%)": f"{w['pnl']:+.2f}",
+            "勝率 (%)": f"{w['win_rate']:.1f}",
+            "トレード数": w["trades"],
+            "Sharpe": f"{w['sharpe']:.2f}",
+            "スコア": f"{w['score']:.4f}",
+            "評価回数": ga_result.total_evaluations,
+        })
+
+    st.dataframe(pd.DataFrame(result_data), use_container_width=True)
+
+    # 世代推移チャート
+    with st.expander("📈 世代ごとのスコア推移", expanded=False):
+        for ga_result in all_ga_results:
+            st.caption(f"**{ga_result.regime}**")
+            gen_data = []
+            for gen in ga_result.generations:
+                gen_data.append({
+                    "世代": gen.generation,
+                    "ベストスコア": gen.best_score,
+                    "平均スコア": gen.avg_score,
+                })
+            if gen_data:
+                chart_df = pd.DataFrame(gen_data)
+                st.line_chart(chart_df.set_index("世代"))
+
+    # GA結果をセッションに保存（後で比較等に使用可能）
+    st.session_state.ga_results = all_ga_results
 
 
 def _run_optimization(
