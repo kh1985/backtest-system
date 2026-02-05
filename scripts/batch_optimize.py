@@ -472,13 +472,21 @@ def _extract_oos_results(
 
         if is_oos and isinstance(result, ValidatedResultSet):
             # OOS結果: テスト通過した戦略
+            # train結果を辞書化してO(1)ルックアップ（線形探索を排除）
+            train_maps: Dict[str, Dict[tuple, Any]] = {}
+            for regime in TARGET_REGIMES:
+                entries = result.train_results.filter_regime(regime).entries
+                train_maps[regime] = {
+                    (e.template_name, tuple(sorted(e.params.items()))): e
+                    for e in entries
+                }
+
             for regime, test_entry in result.test_results.items():
-                train_entry = None
-                for te in result.train_results.filter_regime(regime).entries:
-                    if (te.template_name == test_entry.template_name
-                            and te.params == test_entry.params):
-                        train_entry = te
-                        break
+                # 辞書から直接取得
+                params_key = tuple(sorted(test_entry.params.items()))
+                train_entry = train_maps.get(regime, {}).get(
+                    (test_entry.template_name, params_key)
+                )
 
                 rows.append({
                     "period": period,

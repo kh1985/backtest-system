@@ -408,8 +408,14 @@ class GridSearchOptimizer:
         current = 0
 
         for config in configs:
-            template_name = config.pop("_template_name", config.get("name", "unknown"))
-            params = config.pop("_params", {})
+            # 非破壊的にメタ情報を取得（configを変更しない）
+            template_name = config.get("_template_name", config.get("name", "unknown"))
+            params = config.get("_params", {})
+            # _template_name, _params を除いたconfigを生成
+            config_clean = {
+                k: v for k, v in config.items()
+                if k not in ("_template_name", "_params")
+            }
 
             for regime in target_regimes:
                 current += 1
@@ -421,7 +427,7 @@ class GridSearchOptimizer:
                 try:
                     entry = self._run_single(
                         df=df,
-                        config=config,
+                        config=config_clean,
                         template_name=template_name,
                         params=params,
                         target_regime=regime,
