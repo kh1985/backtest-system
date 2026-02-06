@@ -153,6 +153,83 @@ class TrendDetector:
 
         return df
 
+    def detect_dual_tf_ema(
+        self,
+        htf_df: pd.DataFrame,
+        super_htf_df: pd.DataFrame,
+        fast_period: int = 20,
+        slow_period: int = 50,
+    ) -> pd.DataFrame:
+        """
+        Dual-TF EMA方式でトレンドを判定
+
+        4h と 1h の EMA fast/slow の方向が一致した場合のみトレンド。
+        不一致はすべて Range。
+
+        - 4h up AND 1h up → Uptrend
+        - 4h down AND 1h down → Downtrend
+        - それ以外 → Range
+
+        Args:
+            htf_df: 1h OHLCV DataFrame (datetime, close必須)
+            super_htf_df: 4h OHLCV DataFrame (datetime, close必須)
+            fast_period: 短期EMA期間
+            slow_period: 長期EMA期間
+
+        Returns:
+            htf_df に 'trend_regime' カラムが追加されたDataFrame
+        """
+        htf_df = htf_df.copy()
+        super_htf_df = super_htf_df.copy()
+
+        # --- 4h: EMA計算 & 方向判定 ---
+        s_close = super_htf_df["close"]
+        s_ema_fast = s_close.ewm(span=fast_period, adjust=False).mean()
+        s_ema_slow = s_close.ewm(span=slow_period, adjust=False).mean()
+        # up=1, down=-1
+        super_dir = np.where(s_ema_fast > s_ema_slow, 1, -1)
+        super_htf_df["_trend_dir"] = super_dir
+
+        # --- 1h: EMA計算 & 方向判定 ---
+        h_close = htf_df["close"]
+        h_ema_fast = h_close.ewm(span=fast_period, adjust=False).mean()
+        h_ema_slow = h_close.ewm(span=slow_period, adjust=False).mean()
+        htf_dir = np.where(h_ema_fast > h_ema_slow, 1, -1)
+        htf_df["_trend_dir"] = htf_dir
+
+        # --- 4h方向を1hにforward-fill (merge_asof) ---
+        super_labels = super_htf_df[["datetime", "_trend_dir"]].copy()
+        super_labels = super_labels.rename(columns={"_trend_dir": "_super_dir"})
+        super_labels = super_labels.sort_values("datetime")
+
+        htf_df = htf_df.sort_values("datetime").reset_index(drop=True)
+        merged = pd.merge_asof(
+            htf_df[["datetime"]],
+            super_labels,
+            on="datetime",
+            direction="backward",
+        )
+        htf_df["_super_dir"] = merged["_super_dir"].values
+
+        # --- レジーム判定: 両TF一致 → トレンド, 不一致 → Range ---
+        htf_dir_col = htf_df["_trend_dir"].values
+        super_dir_col = htf_df["_super_dir"].values
+
+        regime = np.full(len(htf_df), TrendRegime.RANGE.value, dtype=object)
+        both_up = (htf_dir_col == 1) & (super_dir_col == 1)
+        both_down = (htf_dir_col == -1) & (super_dir_col == -1)
+        regime[both_up] = TrendRegime.UPTREND.value
+        regime[both_down] = TrendRegime.DOWNTREND.value
+
+        htf_df["trend_regime"] = regime
+        htf_df["trend_ema_fast"] = h_ema_fast
+        htf_df["trend_ema_slow"] = h_ema_slow
+
+        # 一時カラム削除
+        htf_df.drop(columns=["_trend_dir", "_super_dir"], inplace=True)
+
+        return htf_df
+
     @staticmethod
     def label_execution_tf(
         exec_df: pd.DataFrame,

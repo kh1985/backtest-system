@@ -64,6 +64,7 @@ def optimize_one(
     exit_profiles_mode: str,
     template_filter: Optional[str],
     run_id: str,
+    super_htf: str = "",
 ) -> Dict[str, Any]:
     """1銘柄×1TF×1期間の最適化を実行"""
     import sys
@@ -128,7 +129,22 @@ def optimize_one(
     htf_ohlcv = tf_dict[htf]
     htf_df = htf_ohlcv.df.copy()
     detector = TrendDetector()
-    htf_df = detector.detect_ma_cross(htf_df, fast_period=MA_FAST, slow_period=MA_SLOW)
+
+    if super_htf:
+        super_htf_path = inputdata_dir / f"{symbol}-{super_htf}-{period}-merged.csv"
+        if super_htf_path.exists():
+            super_htf_ohlcv = loader.load(str(super_htf_path), symbol=symbol)
+            super_htf_df = super_htf_ohlcv.df.copy()
+            htf_df = detector.detect_dual_tf_ema(
+                htf_df, super_htf_df, fast_period=MA_FAST, slow_period=MA_SLOW
+            )
+            print(f"  {job_id}: Dual-TF EMA ({htf}+{super_htf})")
+        else:
+            htf_df = detector.detect_ma_cross(htf_df, fast_period=MA_FAST, slow_period=MA_SLOW)
+            print(f"  {job_id}: {super_htf}データなし → MA Cross fallback")
+    else:
+        htf_df = detector.detect_ma_cross(htf_df, fast_period=MA_FAST, slow_period=MA_SLOW)
+
     exec_df = TrendDetector.label_execution_tf(exec_df, htf_df)
 
     bars = len(exec_df)
@@ -488,6 +504,7 @@ def main(
     templates: str = "",
     no_oos: bool = False,
     workers: int = 8,
+    super_htf: str = "4h",
 ):
     """ローカルから実行するエントリーポイント"""
     use_oos = not no_oos
@@ -528,6 +545,7 @@ def main(
     print(f"期間: {period_list}")
     print(f"TF: {tf_list}")
     print(f"OOS: {'ON' if use_oos else 'OFF'}")
+    print(f"Super HTF: {super_htf if super_htf else 'なし（MA Cross fallback）'}")
     print(f"Exit profiles: {exit_profiles}")
     print(f"Run ID: {run_id}")
 
@@ -546,6 +564,7 @@ def main(
                         exit_profiles_mode=exit_profiles,
                         template_filter=template_filter,
                         run_id=run_id,
+                        super_htf=super_htf,
                     )
                 )
 
