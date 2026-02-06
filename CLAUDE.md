@@ -6,7 +6,8 @@
 
 - OHLCVデータの読み込み（Binance CSV/ZIP, TradingView CSV）
 - GUI上で戦略を組み立てて1回バックテスト実行・分析
-- 6種テンプレート × パラメータグリッドサーチ × トレンドレジーム別の自動最適化
+- 21種テンプレート × パラメータグリッドサーチ/GA × トレンドレジーム別の自動最適化
+- Modal クラウド並列実行（データ取得→最適化→結果DL）
 - 最適化結果のJSON保存・読み込み・YAML戦略エクスポート
 
 ## Current state
@@ -16,20 +17,26 @@
 - **戦略ビルダー**: インジケーター・エントリー条件・決済ルールをGUIで設定（YAML入出力対応）
 - **バックテストエンジン**: bar-by-bar シミュレーション（TP/SL/トレーリングストップ/タイムアウト）
 - **トレード分析**: 個別トレード詳細チャート・損益分布・勝敗統計・決済タイプ分布
-- **自動最適化**: 6種テンプレート × グリッドサーチ × レジーム別。複合スコアでランキング
+- **自動最適化**: 21種テンプレート × グリッドサーチ/GA × レジーム別。複合スコアでランキング
+- **Exit Profiles**: ATR固定/トレーリング/VWAP/BB系 全69パターン + コンパクト3択モード
+- **Modal並列実行**: `scripts/modal_optimize.py` でクラウド上バッチ最適化
+- **Dual-TF EMAレジーム検出**: 4h+1h EMA合意方式（`analysis/trend.py`）
+- **OOS検証**: train 60% / val 20% / test 20% のアウトオブサンプル検証
 - **最適化結果JSON読み込み**: `results/` フォルダのJSON → 結果ビュー表示（`OptimizationResultSet.from_json()`）
 - **レジーム別ベスト戦略サマリー**: 各レジームの最適戦略カード表示 + YAML一括エクスポート
 - **UI**: Streamlit WebUI、ダークテーマ、カスタムCSS、ワークフローガイド
 
-### テンプレート一覧
-| テンプレート | 概要 |
-|-------------|------|
-| MA Crossover | SMA fast/slow クロス |
-| RSI Reversal | RSI売られすぎ反発 |
-| BB Bounce | ボリンジャーバンド下限タッチ |
-| MACD Signal | MACDラインクロス |
-| Volume Spike | 出来高急増 + 陰線反転 |
-| Stochastic Reversal | ストキャスティクス K/D クロス |
+### テンプレート一覧（21種）
+| テンプレート | 概要 | Long/Short |
+|-------------|------|-----------|
+| MA Crossover | SMA fast/slow クロス | Long+Short |
+| RSI Reversal | RSI売られすぎ/買われすぎ反発 | Long+Short |
+| BB Bounce | ボリンジャーバンド下限/上限タッチ | Long+Short |
+| MACD Signal | MACDラインクロス | Long+Short |
+| Volume Spike | 出来高急増 + 陰線/陽線反転 | Long+Short |
+| Stochastic Reversal | ストキャスティクス K/D クロス | Long+Short |
+| VP Pullback | Volume Profile POCへの押し目 | Long |
+| VWAP Touch/Sigma | VWAP系エントリー | Long+Short |
 
 ### UI名称
 - システム名: **Prism**（旧: Backtest System）
@@ -40,7 +47,7 @@
 
 ```
 backtest-system/
-├── analysis/          # トレンドレジーム検出（MA Cross, ADX, Combined）
+├── analysis/          # トレンドレジーム検出（MA Cross, ADX, Combined, Dual-TF EMA）
 ├── config/            # 設定（settings.py: STREAMLIT_PAGE_TITLE等）
 ├── data/              # データ読み込み（csv_loader, binance_loader, base）
 ├── engine/            # バックテストエンジン（backtest.py）
@@ -48,7 +55,7 @@ backtest-system/
 ├── metrics/           # パフォーマンス指標計算（calculator.py: BacktestMetrics）
 ├── optimizer/         # グリッドサーチ・テンプレート・スコアリング・結果（results.py）
 ├── results/           # 最適化結果JSON保存先
-├── scripts/           # データダウンロードスクリプト
+├── scripts/           # Modal実行スクリプト（fetch_data, upload, optimize, download）
 ├── strategy/          # 戦略定義・ビルダー・YAML例（examples/）
 ├── ui/
 │   ├── app.py         # メインアプリ（Prism）
@@ -78,6 +85,7 @@ backtest-system/
 - pandas / numpy（データ処理）
 - ccxt（取引所API）
 - PyYAML（戦略設定）
+- Modal（クラウド並列実行）
 
 ## Coding style
 
@@ -130,9 +138,36 @@ backtest-system/
 - ファイル名・ディレクトリ名・関数名・クラス名・コード識別子は英語
 - 明示的に求められない限り英語に切り替えない
 
+## 最適化の運用方針（2026-02-06時点）
+
+### 確定した設定
+- **レジーム検出**: Dual-TF EMA（4h+1h合意方式）。`--super-htf 4h`
+- **Exit profiles**: `atr_compact`（SL=ATR×2.0固定、TP 3択）が標準
+- **OOS**: 必須（train 60% / val 20% / test 20%）
+- **データ期間**: 2年分が推奨
+
+### 過学習防止の原則
+- 探索空間は小さく保つ（exit compact, パラメータ数制限）
+- OOSは検出のみ。防止には空間削減が必要
+- 最低トレード数フィルタ（20件以上）を推奨
+- 銘柄横断（symbol_count >= 2）で汎用性を確認
+
+### 一貫した傾向
+- **range > downtrend > uptrend**（OOS通過率の順）
+- Uptrendは過学習しやすく、ほぼ全滅
+- Downtrendは2銘柄(SOL, XRP)でPASS → 横断検証の価値あり
+
+### 完全クラウドワークフロー
+```
+modal run scripts/modal_fetch_data.py     # データ取得（Binance → Volume）
+modal run scripts/modal_optimize.py --exit-profiles atr_compact  # 最適化
+modal run scripts/modal_download.py       # 結果DL
+```
+
 ## Discussion notes
 
-### 下落トレンド銘柄横断仮説（未着手）
-- ユーザーの仮説: 下落トレンドでは銘柄を問わず特定の戦略（ショート系テンプレート）が機能するのではないか
-- 検証アプローチ案: 複数銘柄（TRXUSDT, XRPUSDT等）のdowntrendレジーム結果を横断比較
-- ステータス: 議論のみ。実装指示は未出
+### 下落トレンド銘柄横断仮説（部分検証済み）
+- ユーザーの仮説: 下落トレンドでは銘柄を問わず特定の戦略が機能するのではないか
+- 検証結果: SOL(ma_crossover +4.9%)とXRP(rsi_reversal +25.5%)でdowntrend PASS確認
+- ただしテンプレート自体は銘柄間で異なる → 「戦略は同じ」ではなく「レジームとしてエッジがある」
+- **次のステップ**: 10銘柄に拡大して横断検証

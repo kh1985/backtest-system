@@ -185,20 +185,29 @@ ALL_PROFILES: List[ExitProfile] = (
     + VWAP_RANGE_PROFILES
 )
 
+# =============================================================================
+# コンパクト: SL=ATR×2.0固定、TP 3択（探索空間削減用）
+# =============================================================================
+ATR_COMPACT_PROFILES: List[ExitProfile] = [
+    p for p in ATR_PROFILES
+    if p["atr_sl_mult"] == 2.0 and p["atr_tp_mult"] in (1.5, 2.0, 3.0)
+]
+
 
 def get_profiles(mode: str = "all") -> List[ExitProfile]:
     """
     指定モードの exit profiles を取得
 
     Args:
-        mode: "all", "atr", "atr_trailing", "atr_hybrid", "vwap", "bb",
-              "vwap_trend", "vwap_range", "vwap_entry"
+        mode: "all", "atr", "atr_compact", "atr_trailing", "atr_hybrid",
+              "vwap", "bb", "vwap_trend", "vwap_range", "vwap_entry"
 
     Returns:
         ExitProfile のリスト
     """
     modes = {
         "atr": ATR_PROFILES,
+        "atr_compact": ATR_COMPACT_PROFILES,
         "atr_trailing": ATR_TRAILING_PROFILES,
         "atr_hybrid": ATR_HYBRID_PROFILES,
         "vwap": VWAP_PROFILES,
