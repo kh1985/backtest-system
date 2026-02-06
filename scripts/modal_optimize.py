@@ -285,7 +285,7 @@ def optimize_one(
     timeout=600,
     volumes={"/results": vol_results},
 )
-def generate_ranking(run_id: str, use_oos: bool, config_info: Dict[str, Any]) -> str:
+def generate_ranking(run_id: str, use_oos: bool, config_info: Dict[str, Any], min_oos_trades: int = 20) -> str:
     """全結果JSONを読み込んでランキングとレポートを生成"""
     import json
     from collections import defaultdict
@@ -333,7 +333,10 @@ def generate_ranking(run_id: str, use_oos: bool, config_info: Dict[str, Any]) ->
                     "oos_win_rate": entry["metrics"]["win_rate"],
                     "oos_sharpe": entry["metrics"]["sharpe"],
                     "oos_pf": entry["metrics"]["profit_factor"],
-                    "oos_pass": entry["metrics"]["total_pnl"] > 0,
+                    "oos_pass": (
+                        entry["metrics"]["total_pnl"] > 0
+                        and entry["metrics"]["trades"] >= min_oos_trades
+                    ),
                     "data_source": "oos_test",
                 })
             # OOS結果がないレジームのTrain結果
@@ -505,6 +508,7 @@ def main(
     no_oos: bool = False,
     workers: int = 8,
     super_htf: str = "4h",
+    min_oos_trades: int = 20,
 ):
     """ローカルから実行するエントリーポイント"""
     use_oos = not no_oos
@@ -547,6 +551,7 @@ def main(
     print(f"OOS: {'ON' if use_oos else 'OFF'}")
     print(f"Super HTF: {super_htf if super_htf else 'なし（MA Cross fallback）'}")
     print(f"Exit profiles: {exit_profiles}")
+    print(f"Min OOS trades: {min_oos_trades}")
     print(f"Run ID: {run_id}")
 
     # --- 全ジョブを一括投入 ---
@@ -597,8 +602,9 @@ def main(
         "periods": period_list,
         "use_oos": use_oos,
         "exit_mode": exit_profiles,
+        "min_oos_trades": min_oos_trades,
     }
-    summary = generate_ranking.remote(run_id, use_oos, config_info)
+    summary = generate_ranking.remote(run_id, use_oos, config_info, min_oos_trades)
     print(f"  {summary}")
 
     # --- 完了 ---
