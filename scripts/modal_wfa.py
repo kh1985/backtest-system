@@ -146,11 +146,12 @@ def wfa_one(
     if exit_profiles_mode != "none":
         exit_profiles = get_profiles(exit_profiles_mode)
 
+    use_all = template_filter.strip().lower() == "all"
     filter_patterns = [p.strip().lower() for p in template_filter.split(",")]
 
     all_configs = []
     for tname, template in BUILTIN_TEMPLATES.items():
-        if not any(p in tname.lower() for p in filter_patterns):
+        if not use_all and not any(p in tname.lower() for p in filter_patterns):
             continue
         configs = template.generate_configs(exit_profiles=exit_profiles)
         all_configs.extend(configs)

@@ -1,12 +1,16 @@
 """
 戦略テンプレート
 
-20種の組み込みテンプレート:
+25種の組み込みテンプレート:
 - 基本テンプレート（ロング7種 + ショート7種 = 14種）
 - VWAP戦略（6種）:
   - vwap_touch_long/short: VWAPタッチ（押し目/戻り）
   - vwap_upper1_long / vwap_lower1_short: ±1σバンド順張り（トレンドフォロー）
   - vwap_2sigma_long/short: ±2σバンド逆張り（レンジ向け）
+- Volume Profile（1種）
+- 複合条件テンプレート（4種）:
+  - rsi_volume_short/long: RSI極値 + 出来高急増 + キャンドル確認
+  - bb_volume_short/long: BB帯タッチ + 出来高急増 + キャンドル確認
 
 プレースホルダー {param} で変数パラメータを定義し、
 generate_configs() で全組み合わせ（直積）を自動生成。
@@ -838,6 +842,177 @@ _register(StrategyTemplate(
     param_ranges=[
         ParameterRange("n_bins", 30, 70, 20, "int"),
         ParameterRange("touch_tolerance", 0.3, 0.7, 0.2, "float"),
+    ],
+))
+
+# ============================================================
+# 複合条件テンプレート（Compound Condition Templates）
+# 既存インジケーターを組み合わせてシグナル精度を強化
+# ============================================================
+
+# 22. RSI + Volume Short
+_register(StrategyTemplate(
+    name="rsi_volume_short",
+    description="RSI買われすぎ + 出来高急増 + 陰線でショート（複合条件）",
+    config_template={
+        "name": "rsi_volume_short",
+        "side": "short",
+        "indicators": [
+            {"type": "rsi", "period": "{rsi_period}"},
+            {"type": "rvol", "period": 20},
+        ],
+        "entry_conditions": [
+            {
+                "type": "threshold",
+                "column": "rsi_{rsi_period}",
+                "operator": ">",
+                "value": "{rsi_threshold}",
+            },
+            {
+                "type": "threshold",
+                "column": "rvol_20",
+                "operator": ">",
+                "value": "{rvol_threshold}",
+            },
+            {
+                "type": "candle",
+                "pattern": "bearish",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[
+        ParameterRange("rsi_period", 14, 20, 6, "int"),
+        ParameterRange("rsi_threshold", 65, 75, 5, "int"),
+        ParameterRange("rvol_threshold", 2, 4, 1, "int"),
+    ],
+))
+
+# 23. RSI + Volume Long
+_register(StrategyTemplate(
+    name="rsi_volume_long",
+    description="RSI売られすぎ + 出来高急増 + 陽線でロング（複合条件）",
+    config_template={
+        "name": "rsi_volume_long",
+        "side": "long",
+        "indicators": [
+            {"type": "rsi", "period": "{rsi_period}"},
+            {"type": "rvol", "period": 20},
+        ],
+        "entry_conditions": [
+            {
+                "type": "threshold",
+                "column": "rsi_{rsi_period}",
+                "operator": "<",
+                "value": "{rsi_threshold}",
+            },
+            {
+                "type": "threshold",
+                "column": "rvol_20",
+                "operator": ">",
+                "value": "{rvol_threshold}",
+            },
+            {
+                "type": "candle",
+                "pattern": "bullish",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[
+        ParameterRange("rsi_period", 14, 20, 6, "int"),
+        ParameterRange("rsi_threshold", 25, 35, 5, "int"),
+        ParameterRange("rvol_threshold", 2, 4, 1, "int"),
+    ],
+))
+
+# 24. BB + Volume Short
+_register(StrategyTemplate(
+    name="bb_volume_short",
+    description="BB上限タッチ + 出来高急増 + 陰線でショート（複合条件）",
+    config_template={
+        "name": "bb_volume_short",
+        "side": "short",
+        "indicators": [
+            {"type": "bollinger", "period": "{bb_period}", "std_dev": 2.0},
+            {"type": "rvol", "period": 20},
+        ],
+        "entry_conditions": [
+            {
+                "type": "column_compare",
+                "column_a": "close",
+                "operator": ">=",
+                "column_b": "bb_upper_{bb_period}",
+            },
+            {
+                "type": "threshold",
+                "column": "rvol_20",
+                "operator": ">",
+                "value": "{rvol_threshold}",
+            },
+            {
+                "type": "candle",
+                "pattern": "bearish",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[
+        ParameterRange("bb_period", 15, 25, 5, "int"),
+        ParameterRange("rvol_threshold", 2, 4, 1, "int"),
+    ],
+))
+
+# 25. BB + Volume Long
+_register(StrategyTemplate(
+    name="bb_volume_long",
+    description="BB下限タッチ + 出来高急増 + 陽線でロング（複合条件）",
+    config_template={
+        "name": "bb_volume_long",
+        "side": "long",
+        "indicators": [
+            {"type": "bollinger", "period": "{bb_period}", "std_dev": 2.0},
+            {"type": "rvol", "period": 20},
+        ],
+        "entry_conditions": [
+            {
+                "type": "column_compare",
+                "column_a": "close",
+                "operator": "<=",
+                "column_b": "bb_lower_{bb_period}",
+            },
+            {
+                "type": "threshold",
+                "column": "rvol_20",
+                "operator": ">",
+                "value": "{rvol_threshold}",
+            },
+            {
+                "type": "candle",
+                "pattern": "bullish",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[
+        ParameterRange("bb_period", 15, 25, 5, "int"),
+        ParameterRange("rvol_threshold", 2, 4, 1, "int"),
     ],
 ))
 

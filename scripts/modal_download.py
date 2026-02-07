@@ -36,7 +36,10 @@ def list_runs() -> list:
         for d in sorted(results_dir.iterdir()):
             if d.is_dir():
                 opt_dir = d / "optimization"
-                n_files = len(list(opt_dir.glob("*.json"))) if opt_dir.exists() else 0
+                wfa_dir = d / "wfa"
+                n_opt = len(list(opt_dir.glob("*.json"))) if opt_dir.exists() else 0
+                n_wfa = len(list(wfa_dir.glob("*.json"))) if wfa_dir.exists() else 0
+                n_files = n_opt + n_wfa
                 has_report = (d / "report.md").exists()
                 runs.append({
                     "run_id": d.name,
@@ -68,6 +71,13 @@ def download_run(run_id: str) -> dict:
         for f in opt_dir.glob("*.json"):
             with open(f, "r", encoding="utf-8") as fh:
                 files[f"optimization/{f.name}"] = fh.read()
+
+    # wfa/ 内のJSON
+    wfa_dir = run_dir / "wfa"
+    if wfa_dir.exists():
+        for f in wfa_dir.glob("*.json"):
+            with open(f, "r", encoding="utf-8") as fh:
+                files[f"wfa/{f.name}"] = fh.read()
 
     # ranking.json
     ranking_path = run_dir / "ranking.json"
