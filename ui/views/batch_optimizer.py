@@ -32,6 +32,7 @@ from optimizer.validation import (
 )
 from optimizer.exit_profiles import (
     ATR_PROFILES,
+    ATR_COMPACT_PROFILES,
     ATR_TRAILING_PROFILES,
     ATR_HYBRID_PROFILES,
     VWAP_PROFILES,
@@ -113,6 +114,11 @@ def get_template_label(name: str) -> str:
 # =============================================================================
 
 EXIT_CATEGORIES: Dict[str, Dict[str, Any]] = {
+    "atr_compact": {
+        "label": "ATRコンパクト（推奨）",
+        "description": "SL=ATR×2.0固定、TP 3択（1.5/2.0/3.0）",
+        "profiles": ATR_COMPACT_PROFILES,
+    },
     "atr": {
         "label": "ATR固定",
         "description": "ATR倍率でTP/SL固定",
@@ -314,6 +320,8 @@ def prepare_exec_df(
     tf_dict: Dict[str, OHLCVData],
     exec_tf: str,
     htf: str,
+    trend_method: str = "ma_cross",
+    super_htf_df: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
     """実行TFのDataFrameにトレンドラベルを付与"""
     exec_ohlcv = tf_dict[exec_tf]
@@ -323,9 +331,15 @@ def prepare_exec_df(
         htf_ohlcv = tf_dict[htf]
         htf_df = htf_ohlcv.df.copy()
         detector = TrendDetector()
-        htf_df = detector.detect_ma_cross(
-            htf_df, fast_period=MA_FAST, slow_period=MA_SLOW
-        )
+
+        if trend_method == "dual_tf_ema" and super_htf_df is not None:
+            htf_df = detector.detect_dual_tf_ema(
+                htf_df, super_htf_df, fast_period=MA_FAST, slow_period=MA_SLOW
+            )
+        else:
+            htf_df = detector.detect_ma_cross(
+                htf_df, fast_period=MA_FAST, slow_period=MA_SLOW
+            )
         exec_df = TrendDetector.label_execution_tf(exec_df, htf_df)
     else:
         exec_df["trend_regime"] = TrendRegime.RANGE.value
@@ -986,6 +1000,40 @@ def _render_exit_selection():
 
 def _render_execution_settings():
     """実行設定UIを描画"""
+    # トレンド検出方法
+    st.markdown("**トレンド検出方法**")
+    trend_col1, trend_col2 = st.columns(2)
+    with trend_col1:
+        batch_trend_method = st.selectbox(
+            "検出方法",
+            options=["ma_cross", "dual_tf_ema", "adx", "combined"],
+            format_func=lambda x: {
+                "ma_cross": "MA Cross（移動平均クロス）",
+                "dual_tf_ema": "Dual-TF EMA（4h+1h合意）★推奨",
+                "adx": "ADX（トレンド強度）",
+                "combined": "MA Cross + ADX（複合）",
+            }[x],
+            index=1,
+            key="batch_trend_method",
+            help="トレンド/レンジを判定するアルゴリズム",
+        )
+    with trend_col2:
+        if batch_trend_method == "dual_tf_ema":
+            batch_super_htf = st.selectbox(
+                "Super HTF",
+                options=["4h", "1d"],
+                index=0,
+                key="batch_super_htf",
+                help="Dual-TF EMAの上位タイムフレーム（通常4h）",
+            )
+        else:
+            batch_super_htf = None
+
+    st.session_state.batch_trend_method = batch_trend_method
+    st.session_state.batch_super_htf = batch_super_htf
+
+    st.divider()
+
     # レジーム選択
     st.markdown("**対象レジーム**")
     regime_cols = st.columns(3)
@@ -1358,7 +1406,22 @@ def _start_batch_optimization(scan_result: Dict[str, Any]):
         try:
             # データロード
             tf_dict = load_symbol_data(symbol, period, exec_tf, htf, files)
-            exec_df = prepare_exec_df(tf_dict, exec_tf, htf)
+
+            # Dual-TF EMA用のsuper_htfデータ
+            _trend_method = st.session_state.get("batch_trend_method", "ma_cross")
+            _super_htf = st.session_state.get("batch_super_htf")
+            _super_htf_df = None
+            if _trend_method == "dual_tf_ema" and _super_htf:
+                super_htf_path = files.get((symbol, _super_htf, period))
+                if super_htf_path:
+                    loader = BinanceCSVLoader()
+                    _super_htf_df = loader.load(str(super_htf_path), symbol=symbol).df.copy()
+
+            exec_df = prepare_exec_df(
+                tf_dict, exec_tf, htf,
+                trend_method=_trend_method,
+                super_htf_df=_super_htf_df,
+            )
 
             if search_method == "ga":
                 # GA最適化実行（OOS検証付き）

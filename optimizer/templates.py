@@ -7,10 +7,12 @@
   - vwap_touch_long/short: VWAPタッチ（押し目/戻り）
   - vwap_upper1_long / vwap_lower1_short: ±1σバンド順張り（トレンドフォロー）
   - vwap_2sigma_long/short: ±2σバンド逆張り（レンジ向け）
-- Volume Profile（1種）
-- 複合条件テンプレート（4種）:
-  - rsi_volume_short/long: RSI極値 + 出来高急増 + キャンドル確認
-  - bb_volume_short/long: BB帯タッチ + 出来高急増 + キャンドル確認
+- VP戦略（1種）: vp_pullback_long
+- 複合テンプレート（4種）:
+  - rsi_volume_reversal: RSI売られすぎ + 出来高急増 → ロング
+  - rsi_volume_reversal_short: RSI買われすぎ + 出来高急増 → ショート
+  - rsi_bb_reversal: RSI売られすぎ + BB下限タッチ → ロング
+  - rsi_bb_reversal_short: RSI買われすぎ + BB上限タッチ → ショート
 
 プレースホルダー {param} で変数パラメータを定義し、
 generate_configs() で全組み合わせ（直積）を自動生成。
@@ -845,68 +847,28 @@ _register(StrategyTemplate(
     ],
 ))
 
-# ============================================================
-# 複合条件テンプレート（Compound Condition Templates）
-# 既存インジケーターを組み合わせてシグナル精度を強化
-# ============================================================
 
-# 22. RSI + Volume Short
-_register(StrategyTemplate(
-    name="rsi_volume_short",
-    description="RSI買われすぎ + 出来高急増 + 陰線でショート（複合条件）",
-    config_template={
-        "name": "rsi_volume_short",
-        "side": "short",
-        "indicators": [
-            {"type": "rsi", "period": "{rsi_period}"},
-            {"type": "rvol", "period": 20},
-        ],
-        "entry_conditions": [
-            {
-                "type": "threshold",
-                "column": "rsi_{rsi_period}",
-                "operator": ">",
-                "value": "{rsi_threshold}",
-            },
-            {
-                "type": "threshold",
-                "column": "rvol_20",
-                "operator": ">",
-                "value": "{rvol_threshold}",
-            },
-            {
-                "type": "candle",
-                "pattern": "bearish",
-            },
-        ],
-        "entry_logic": "and",
-        "exit": {
-            "take_profit_pct": 2.0,
-            "stop_loss_pct": 1.0,
-        },
-    },
-    param_ranges=[
-        ParameterRange("rsi_period", 14, 20, 6, "int"),
-        ParameterRange("rsi_threshold", 65, 75, 5, "int"),
-        ParameterRange("rvol_threshold", 2, 4, 1, "int"),
-    ],
-))
+# =====================================================================
+# 複合テンプレート（downtrend横断検証用）
+# インジケーター期間は固定、探索は閾値のみ → 過学習を抑制
+# =====================================================================
 
-# 23. RSI + Volume Long
+# 22. RSI + Volume Reversal Long
+# RSI売られすぎ + 出来高急増 + 陽線 → 反転ロング
 _register(StrategyTemplate(
-    name="rsi_volume_long",
-    description="RSI売られすぎ + 出来高急増 + 陽線でロング（複合条件）",
+    name="rsi_volume_reversal",
+    description="RSI売られすぎ + 出来高急増 + 陽線反転でロング（下落トレンド逆張り）",
     config_template={
-        "name": "rsi_volume_long",
+        "name": "rsi_volume_reversal",
         "side": "long",
         "indicators": [
-            {"type": "rsi", "period": "{rsi_period}"},
+            {"type": "rsi", "period": 14},
             {"type": "rvol", "period": 20},
         ],
         "entry_conditions": [
             {
                 "type": "threshold",
-                "column": "rsi_{rsi_period}",
+                "column": "rsi_14",
                 "operator": "<",
                 "value": "{rsi_threshold}",
             },
@@ -928,29 +890,29 @@ _register(StrategyTemplate(
         },
     },
     param_ranges=[
-        ParameterRange("rsi_period", 14, 20, 6, "int"),
         ParameterRange("rsi_threshold", 25, 35, 5, "int"),
         ParameterRange("rvol_threshold", 2, 4, 1, "int"),
     ],
 ))
 
-# 24. BB + Volume Short
+# 23. RSI + Volume Reversal Short
+# RSI買われすぎ + 出来高急増 + 陰線 → 戻り売りショート
 _register(StrategyTemplate(
-    name="bb_volume_short",
-    description="BB上限タッチ + 出来高急増 + 陰線でショート（複合条件）",
+    name="rsi_volume_reversal_short",
+    description="RSI買われすぎ + 出来高急増 + 陰線反転でショート（下落トレンド順張り）",
     config_template={
-        "name": "bb_volume_short",
+        "name": "rsi_volume_reversal_short",
         "side": "short",
         "indicators": [
-            {"type": "bollinger", "period": "{bb_period}", "std_dev": 2.0},
+            {"type": "rsi", "period": 14},
             {"type": "rvol", "period": 20},
         ],
         "entry_conditions": [
             {
-                "type": "column_compare",
-                "column_a": "close",
-                "operator": ">=",
-                "column_b": "bb_upper_{bb_period}",
+                "type": "threshold",
+                "column": "rsi_14",
+                "operator": ">",
+                "value": "{rsi_threshold}",
             },
             {
                 "type": "threshold",
@@ -970,38 +932,35 @@ _register(StrategyTemplate(
         },
     },
     param_ranges=[
-        ParameterRange("bb_period", 15, 25, 5, "int"),
+        ParameterRange("rsi_threshold", 65, 75, 5, "int"),
         ParameterRange("rvol_threshold", 2, 4, 1, "int"),
     ],
 ))
 
-# 25. BB + Volume Long
+# 24. RSI + BB Reversal Long
+# RSI売られすぎ + BB下限タッチ → ダブル逆張り確認ロング
 _register(StrategyTemplate(
-    name="bb_volume_long",
-    description="BB下限タッチ + 出来高急増 + 陽線でロング（複合条件）",
+    name="rsi_bb_reversal",
+    description="RSI売られすぎ + ボリンジャーバンド下限タッチでロング（ダブル逆張り確認）",
     config_template={
-        "name": "bb_volume_long",
+        "name": "rsi_bb_reversal",
         "side": "long",
         "indicators": [
-            {"type": "bollinger", "period": "{bb_period}", "std_dev": 2.0},
-            {"type": "rvol", "period": 20},
+            {"type": "rsi", "period": 14},
+            {"type": "bollinger", "period": 20, "std_dev": 2.0},
         ],
         "entry_conditions": [
             {
+                "type": "threshold",
+                "column": "rsi_14",
+                "operator": "<",
+                "value": "{rsi_threshold}",
+            },
+            {
                 "type": "column_compare",
                 "column_a": "close",
-                "operator": "<=",
-                "column_b": "bb_lower_{bb_period}",
-            },
-            {
-                "type": "threshold",
-                "column": "rvol_20",
-                "operator": ">",
-                "value": "{rvol_threshold}",
-            },
-            {
-                "type": "candle",
-                "pattern": "bullish",
+                "operator": "<",
+                "column_b": "bb_lower_20",
             },
         ],
         "entry_logic": "and",
@@ -1011,8 +970,611 @@ _register(StrategyTemplate(
         },
     },
     param_ranges=[
-        ParameterRange("bb_period", 15, 25, 5, "int"),
+        ParameterRange("rsi_threshold", 25, 35, 5, "int"),
+    ],
+))
+
+# 25. RSI + BB Reversal Short
+# RSI買われすぎ + BB上限タッチ → ダブル逆張り確認ショート
+# Step 7b: RSI閾値4段階（σ=2.0固定 — σ拡張は逆効果と判明）
+_register(StrategyTemplate(
+    name="rsi_bb_reversal_short",
+    description="RSI買われすぎ + ボリンジャーバンド上限タッチでショート（ダブル逆張り確認）",
+    config_template={
+        "name": "rsi_bb_reversal_short",
+        "side": "short",
+        "indicators": [
+            {"type": "rsi", "period": 14},
+            {"type": "bollinger", "period": 20, "std_dev": 2.0},
+        ],
+        "entry_conditions": [
+            {
+                "type": "threshold",
+                "column": "rsi_14",
+                "operator": ">",
+                "value": "{rsi_threshold}",
+            },
+            {
+                "type": "column_compare",
+                "column_a": "close",
+                "operator": ">",
+                "column_b": "bb_upper_20",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[
+        ParameterRange("rsi_threshold", 60, 75, 5, "int"),
+    ],
+))
+
+
+# =====================================================================
+# 複合テンプレート 第2弾（Step 5: 組み合わせ探索）
+# =====================================================================
+
+# 26. Stochastic + BB Reversal Long
+# Stoch K 売られすぎ + BB下限タッチ → ロング
+_register(StrategyTemplate(
+    name="stoch_bb_reversal",
+    description="Stochastic売られすぎ + BB下限タッチでロング",
+    config_template={
+        "name": "stoch_bb_reversal",
+        "side": "long",
+        "indicators": [
+            {"type": "stochastic", "k_period": 14, "d_period": 3},
+            {"type": "bollinger", "period": 20, "std_dev": 2.0},
+        ],
+        "entry_conditions": [
+            {
+                "type": "threshold",
+                "column": "stoch_k_14",
+                "operator": "<",
+                "value": "{stoch_threshold}",
+            },
+            {
+                "type": "column_compare",
+                "column_a": "close",
+                "operator": "<",
+                "column_b": "bb_lower_20",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[
+        ParameterRange("stoch_threshold", 20, 30, 5, "int"),
+    ],
+))
+
+# 27. Stochastic + BB Reversal Short
+# Stoch K 買われすぎ + BB上限タッチ → ショート
+_register(StrategyTemplate(
+    name="stoch_bb_reversal_short",
+    description="Stochastic買われすぎ + BB上限タッチでショート",
+    config_template={
+        "name": "stoch_bb_reversal_short",
+        "side": "short",
+        "indicators": [
+            {"type": "stochastic", "k_period": 14, "d_period": 3},
+            {"type": "bollinger", "period": 20, "std_dev": 2.0},
+        ],
+        "entry_conditions": [
+            {
+                "type": "threshold",
+                "column": "stoch_k_14",
+                "operator": ">",
+                "value": "{stoch_threshold}",
+            },
+            {
+                "type": "column_compare",
+                "column_a": "close",
+                "operator": ">",
+                "column_b": "bb_upper_20",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[
+        ParameterRange("stoch_threshold", 70, 80, 5, "int"),
+    ],
+))
+
+# 28. MACD + BB Reversal Long
+# MACD弱気圏（histogram < 0）+ BB下限タッチ → 反転ロング
+_register(StrategyTemplate(
+    name="macd_bb_reversal",
+    description="MACD弱気圏 + BB下限タッチでロング（反転狙い）",
+    config_template={
+        "name": "macd_bb_reversal",
+        "side": "long",
+        "indicators": [
+            {"type": "macd", "fast": 12, "slow": 26, "signal": 9},
+            {"type": "bollinger", "period": 20, "std_dev": 2.0},
+        ],
+        "entry_conditions": [
+            {
+                "type": "threshold",
+                "column": "macd_histogram",
+                "operator": "<",
+                "value": 0,
+            },
+            {
+                "type": "column_compare",
+                "column_a": "close",
+                "operator": "<",
+                "column_b": "bb_lower_20",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[],
+))
+
+# 29. MACD + BB Reversal Short
+# MACD強気圏（histogram > 0）+ BB上限タッチ → 反転ショート
+_register(StrategyTemplate(
+    name="macd_bb_reversal_short",
+    description="MACD強気圏 + BB上限タッチでショート（反転狙い）",
+    config_template={
+        "name": "macd_bb_reversal_short",
+        "side": "short",
+        "indicators": [
+            {"type": "macd", "fast": 12, "slow": 26, "signal": 9},
+            {"type": "bollinger", "period": 20, "std_dev": 2.0},
+        ],
+        "entry_conditions": [
+            {
+                "type": "threshold",
+                "column": "macd_histogram",
+                "operator": ">",
+                "value": 0,
+            },
+            {
+                "type": "column_compare",
+                "column_a": "close",
+                "operator": ">",
+                "column_b": "bb_upper_20",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[],
+))
+
+# 30. RSI + MACD Reversal Long
+# RSI売られすぎ + MACDクロスオーバー → ロング
+_register(StrategyTemplate(
+    name="rsi_macd_reversal",
+    description="RSI売られすぎ + MACDゴールデンクロスでロング",
+    config_template={
+        "name": "rsi_macd_reversal",
+        "side": "long",
+        "indicators": [
+            {"type": "rsi", "period": 14},
+            {"type": "macd", "fast": 12, "slow": 26, "signal": 9},
+        ],
+        "entry_conditions": [
+            {
+                "type": "threshold",
+                "column": "rsi_14",
+                "operator": "<",
+                "value": "{rsi_threshold}",
+            },
+            {
+                "type": "crossover",
+                "fast": "macd_line",
+                "slow": "macd_signal",
+                "direction": "above",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[
+        ParameterRange("rsi_threshold", 25, 35, 5, "int"),
+    ],
+))
+
+# 31. RSI + MACD Reversal Short
+# RSI買われすぎ + MACDデッドクロス → ショート
+_register(StrategyTemplate(
+    name="rsi_macd_reversal_short",
+    description="RSI買われすぎ + MACDデッドクロスでショート",
+    config_template={
+        "name": "rsi_macd_reversal_short",
+        "side": "short",
+        "indicators": [
+            {"type": "rsi", "period": 14},
+            {"type": "macd", "fast": 12, "slow": 26, "signal": 9},
+        ],
+        "entry_conditions": [
+            {
+                "type": "threshold",
+                "column": "rsi_14",
+                "operator": ">",
+                "value": "{rsi_threshold}",
+            },
+            {
+                "type": "crossover",
+                "fast": "macd_line",
+                "slow": "macd_signal",
+                "direction": "below",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[
+        ParameterRange("rsi_threshold", 65, 75, 5, "int"),
+    ],
+))
+
+# 32. BB + Volume Reversal Long
+# BB下限タッチ + 出来高急増 → ロング
+_register(StrategyTemplate(
+    name="bb_volume_reversal",
+    description="BB下限タッチ + 出来高急増でロング",
+    config_template={
+        "name": "bb_volume_reversal",
+        "side": "long",
+        "indicators": [
+            {"type": "bollinger", "period": 20, "std_dev": 2.0},
+            {"type": "rvol", "period": 20},
+        ],
+        "entry_conditions": [
+            {
+                "type": "column_compare",
+                "column_a": "close",
+                "operator": "<",
+                "column_b": "bb_lower_20",
+            },
+            {
+                "type": "threshold",
+                "column": "rvol_20",
+                "operator": ">",
+                "value": "{rvol_threshold}",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[
         ParameterRange("rvol_threshold", 2, 4, 1, "int"),
     ],
+))
+
+# 33. BB + Volume Reversal Short
+# BB上限タッチ + 出来高急増 → ショート
+# Step 7b: RVOL閾値4段階（σ=2.0固定、RVOL 2.0除去 — PASS率25.7%で低すぎ）
+_register(StrategyTemplate(
+    name="bb_volume_reversal_short",
+    description="BB上限タッチ + 出来高急増でショート",
+    config_template={
+        "name": "bb_volume_reversal_short",
+        "side": "short",
+        "indicators": [
+            {"type": "bollinger", "period": 20, "std_dev": 2.0},
+            {"type": "rvol", "period": 20},
+        ],
+        "entry_conditions": [
+            {
+                "type": "column_compare",
+                "column_a": "close",
+                "operator": ">",
+                "column_b": "bb_upper_20",
+            },
+            {
+                "type": "threshold",
+                "column": "rvol_20",
+                "operator": ">",
+                "value": "{rvol_threshold}",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[
+        ParameterRange("rvol_threshold", 2.5, 4.0, 0.5, "float"),
+    ],
+))
+
+
+# =====================================================================
+# Step 7b: 新規テンプレート（3重複合 + ロング版）
+# =====================================================================
+
+# 34. RSI + BB + Volume Reversal Short（3重複合ショート）
+# RSI買われすぎ + BB上限タッチ + 出来高急増 → ショート
+_register(StrategyTemplate(
+    name="rsi_bb_volume_reversal_short",
+    description="RSI買われすぎ + BB上限タッチ + 出来高急増でショート（3重フィルタ）",
+    config_template={
+        "name": "rsi_bb_volume_reversal_short",
+        "side": "short",
+        "indicators": [
+            {"type": "rsi", "period": 14},
+            {"type": "bollinger", "period": 20, "std_dev": 2.0},
+            {"type": "rvol", "period": 20},
+        ],
+        "entry_conditions": [
+            {
+                "type": "threshold",
+                "column": "rsi_14",
+                "operator": ">",
+                "value": "{rsi_threshold}",
+            },
+            {
+                "type": "column_compare",
+                "column_a": "close",
+                "operator": ">",
+                "column_b": "bb_upper_20",
+            },
+            {
+                "type": "threshold",
+                "column": "rvol_20",
+                "operator": ">",
+                "value": "{rvol_threshold}",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[
+        ParameterRange("rsi_threshold", 65, 75, 5, "int"),
+        ParameterRange("rvol_threshold", 2.5, 3.5, 0.5, "float"),
+    ],
+))
+
+# 35. RSI + BB Reversal Long
+# RSI売られすぎ + BB下限タッチ → ロング（σ=2.0固定）
+# Step 8b: RSI閾値を31/35の2値に絞り込み — RSI<29は過学習トラップと判明
+# Step 8a結果: RSI<29=6.7%, RSI<31=44.4%, RSI<35=66.7% → 31/35のみ有効
+_register(StrategyTemplate(
+    name="rsi_bb_reversal_long",
+    description="RSI売られすぎ + ボリンジャーバンド下限タッチでロング（ダブル逆張り確認）",
+    config_template={
+        "name": "rsi_bb_reversal_long",
+        "side": "long",
+        "indicators": [
+            {"type": "rsi", "period": 14},
+            {"type": "bollinger", "period": 20, "std_dev": 2.0},
+        ],
+        "entry_conditions": [
+            {
+                "type": "threshold",
+                "column": "rsi_14",
+                "operator": "<",
+                "value": "{rsi_threshold}",
+            },
+            {
+                "type": "column_compare",
+                "column_a": "close",
+                "operator": "<",
+                "column_b": "bb_lower_20",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[
+        ParameterRange("rsi_threshold", 31, 35, 4, "int"),
+    ],
+))
+
+# 36. BB + Volume Reversal Long
+# BB下限タッチ + 出来高急増 → ロング（σ=2.0固定）
+_register(StrategyTemplate(
+    name="bb_volume_reversal_long",
+    description="BB下限タッチ + 出来高急増でロング",
+    config_template={
+        "name": "bb_volume_reversal_long",
+        "side": "long",
+        "indicators": [
+            {"type": "bollinger", "period": 20, "std_dev": 2.0},
+            {"type": "rvol", "period": 20},
+        ],
+        "entry_conditions": [
+            {
+                "type": "column_compare",
+                "column_a": "close",
+                "operator": "<",
+                "column_b": "bb_lower_20",
+            },
+            {
+                "type": "threshold",
+                "column": "rvol_20",
+                "operator": ">",
+                "value": "{rvol_threshold}",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[
+        ParameterRange("rvol_threshold", 2.5, 3.5, 0.5, "float"),
+    ],
+))
+
+# 37. RSI + BB Reversal Long (RSI=35 固定)
+# Step 9-1: 探索空間をexit 3択のみに縮小し最終確認
+_register(StrategyTemplate(
+    name="rsi_bb_long_f35",
+    description="RSI<35 + BB下限タッチでロング（RSI=35固定、exit最小探索）",
+    config_template={
+        "name": "rsi_bb_long_f35",
+        "side": "long",
+        "indicators": [
+            {"type": "rsi", "period": 14},
+            {"type": "bollinger", "period": 20, "std_dev": 2.0},
+        ],
+        "entry_conditions": [
+            {
+                "type": "threshold",
+                "column": "rsi_14",
+                "operator": "<",
+                "value": 35,
+            },
+            {
+                "type": "column_compare",
+                "column_a": "close",
+                "operator": "<",
+                "column_b": "bb_lower_20",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[],
+))
+
+# 38. RSI + BB Reversal Short (RSI閾値6値細分化)
+# Step 9-2: ショート版のRSI閾値探索（ロング版Step 8aの対称テスト）
+_register(StrategyTemplate(
+    name="rsi_bb_short_rsi_test",
+    description="RSI買われすぎ + BB上限タッチでショート（RSI閾値6値探索）",
+    config_template={
+        "name": "rsi_bb_short_rsi_test",
+        "side": "short",
+        "indicators": [
+            {"type": "rsi", "period": 14},
+            {"type": "bollinger", "period": 20, "std_dev": 2.0},
+        ],
+        "entry_conditions": [
+            {
+                "type": "threshold",
+                "column": "rsi_14",
+                "operator": ">",
+                "value": "{rsi_threshold}",
+            },
+            {
+                "type": "column_compare",
+                "column_a": "close",
+                "operator": ">",
+                "column_b": "bb_upper_20",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[
+        ParameterRange("rsi_threshold", 65, 67, 2, "int"),
+    ],
+))
+
+# 39. RSI + BB Reversal Short (RSI=65 固定 - Range向け)
+# Step 10-1: ショート版もRSI固定でPASS率向上を確認
+_register(StrategyTemplate(
+    name="rsi_bb_short_f65",
+    description="RSI>65 + BB上限タッチでショート（RSI=65固定、exit最小探索）",
+    config_template={
+        "name": "rsi_bb_short_f65",
+        "side": "short",
+        "indicators": [
+            {"type": "rsi", "period": 14},
+            {"type": "bollinger", "period": 20, "std_dev": 2.0},
+        ],
+        "entry_conditions": [
+            {
+                "type": "threshold",
+                "column": "rsi_14",
+                "operator": ">",
+                "value": 65,
+            },
+            {
+                "type": "column_compare",
+                "column_a": "close",
+                "operator": ">",
+                "column_b": "bb_upper_20",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[],
+))
+
+# 40. RSI + BB Reversal Short (RSI=67 固定 - Downtrend向け)
+# Step 10-2: downtrend で40%→50%に届くか最終確認
+_register(StrategyTemplate(
+    name="rsi_bb_short_f67",
+    description="RSI>67 + BB上限タッチでショート（RSI=67固定、exit最小探索）",
+    config_template={
+        "name": "rsi_bb_short_f67",
+        "side": "short",
+        "indicators": [
+            {"type": "rsi", "period": 14},
+            {"type": "bollinger", "period": 20, "std_dev": 2.0},
+        ],
+        "entry_conditions": [
+            {
+                "type": "threshold",
+                "column": "rsi_14",
+                "operator": ">",
+                "value": 67,
+            },
+            {
+                "type": "column_compare",
+                "column_a": "close",
+                "operator": ">",
+                "column_b": "bb_upper_20",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[],
 ))
 

@@ -261,11 +261,12 @@ def _render_config_view():
     with col3:
         trend_method = st.selectbox(
             "検出方法",
-            options=["ma_cross", "adx", "combined"],
+            options=["ma_cross", "adx", "combined", "dual_tf_ema"],
             format_func=lambda x: {
                 "ma_cross": "MA Cross（移動平均クロス）",
                 "adx": "ADX（トレンド強度）",
                 "combined": "MA Cross + ADX（複合）",
+                "dual_tf_ema": "Dual-TF EMA（4h+1h合意）",
             }[x],
             key="opt_trend_method",
             help="トレンド/レンジを判定するアルゴリズム",
@@ -279,6 +280,20 @@ def _render_config_view():
             key="opt_regimes",
             help="「All」= レジーム分割なしで全バーを対象",
         )
+
+    if trend_method == "dual_tf_ema":
+        super_htf_options = [tf for tf in loaded_tfs if tf != exec_tf and tf != htf]
+        if super_htf_options:
+            super_htf = st.selectbox(
+                "Super HTF（上位TF）",
+                options=super_htf_options,
+                index=super_htf_options.index("4h") if "4h" in super_htf_options else 0,
+                key="opt_super_htf",
+                help="Dual-TF EMAの上位タイムフレーム（通常4h）",
+            )
+        else:
+            super_htf = None
+            st.warning("Dual-TF EMAには3つ以上のTFデータが必要です（例: 15m, 1h, 4h）")
 
     with st.expander("トレンド検出パラメータ", expanded=False):
         tcol1, tcol2, tcol3 = st.columns(3)
@@ -1065,6 +1080,17 @@ def _execute_single_optimization(
                 trend_threshold=adx_trend_th,
                 range_threshold=adx_range_th,
             )
+        elif trend_method == "dual_tf_ema":
+            _super_htf = st.session_state.get("opt_super_htf")
+            if _super_htf and _super_htf in tf_dict:
+                super_htf_df = tf_dict[_super_htf].df.copy()
+                htf_df = detector.detect_dual_tf_ema(
+                    htf_df, super_htf_df, fast_period=ma_fast, slow_period=ma_slow
+                )
+            else:
+                htf_df = detector.detect_ma_cross(
+                    htf_df, fast_period=ma_fast, slow_period=ma_slow
+                )
         else:  # combined
             htf_df = detector.detect_combined(
                 htf_df, ma_fast=ma_fast, ma_slow=ma_slow,
@@ -1141,6 +1167,17 @@ def _execute_validated_optimization(
                 trend_threshold=adx_trend_th,
                 range_threshold=adx_range_th,
             )
+        elif trend_method == "dual_tf_ema":
+            _super_htf = st.session_state.get("opt_super_htf")
+            if _super_htf and _super_htf in tf_dict:
+                super_htf_df = tf_dict[_super_htf].df.copy()
+                htf_df = detector.detect_dual_tf_ema(
+                    htf_df, super_htf_df, fast_period=ma_fast, slow_period=ma_slow
+                )
+            else:
+                htf_df = detector.detect_ma_cross(
+                    htf_df, fast_period=ma_fast, slow_period=ma_slow
+                )
         else:  # combined
             htf_df = detector.detect_combined(
                 htf_df, ma_fast=ma_fast, ma_slow=ma_slow,
@@ -1236,6 +1273,17 @@ def _execute_wfa_optimization(
                 trend_threshold=adx_trend_th,
                 range_threshold=adx_range_th,
             )
+        elif trend_method == "dual_tf_ema":
+            _super_htf = st.session_state.get("opt_super_htf")
+            if _super_htf and _super_htf in tf_dict:
+                super_htf_df = tf_dict[_super_htf].df.copy()
+                htf_df = detector.detect_dual_tf_ema(
+                    htf_df, super_htf_df, fast_period=ma_fast, slow_period=ma_slow
+                )
+            else:
+                htf_df = detector.detect_ma_cross(
+                    htf_df, fast_period=ma_fast, slow_period=ma_slow
+                )
         else:  # combined
             htf_df = detector.detect_combined(
                 htf_df, ma_fast=ma_fast, ma_slow=ma_slow,
@@ -1342,6 +1390,17 @@ def _run_ga_optimization(
                 htf_df, adx_period=adx_period,
                 trend_threshold=adx_trend_th, range_threshold=adx_range_th
             )
+        elif trend_method == "dual_tf_ema":
+            _super_htf = st.session_state.get("opt_super_htf")
+            if _super_htf and _super_htf in tf_dict:
+                super_htf_df = tf_dict[_super_htf].df.copy()
+                htf_df = detector.detect_dual_tf_ema(
+                    htf_df, super_htf_df, fast_period=ma_fast, slow_period=ma_slow
+                )
+            else:
+                htf_df = detector.detect_ma_cross(
+                    htf_df, fast_period=ma_fast, slow_period=ma_slow
+                )
         else:
             htf_df = detector.detect_combined(
                 htf_df, ma_fast=ma_fast, ma_slow=ma_slow,
@@ -1723,6 +1782,18 @@ def _run_regime_switching_test(result_set, viable_strategies, use_original=False
                 htf_df, adx_period=adx_period,
                 trend_threshold=adx_trend_th, range_threshold=adx_range_th,
             )
+        elif trend_method == "dual_tf_ema":
+            _super_htf = st.session_state.get("opt_super_htf")
+            ohlcv_dict = st.session_state.get("ohlcv_dict", {})
+            if _super_htf and _super_htf in ohlcv_dict:
+                super_htf_df = ohlcv_dict[_super_htf].df.copy()
+                htf_df = detector.detect_dual_tf_ema(
+                    htf_df, super_htf_df, fast_period=ma_fast, slow_period=ma_slow
+                )
+            else:
+                htf_df = detector.detect_ma_cross(
+                    htf_df, fast_period=ma_fast, slow_period=ma_slow
+                )
         else:
             htf_df = detector.detect_combined(
                 htf_df, ma_fast=ma_fast, ma_slow=ma_slow,

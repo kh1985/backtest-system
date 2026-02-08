@@ -524,20 +524,20 @@ def main(
         print("ERROR: 有効なTF組み合わせがありません")
         return
 
+    # 期間リスト
+    period_list = [p.strip() for p in period.split(",")]
+
     # 銘柄リスト
     if symbols:
         symbol_list = [s.strip() for s in symbols.split(",")]
     else:
         # Volume内のデータファイルをスキャンして銘柄を自動検出
-        # → ローカルからは直接Volumeを読めないので、スキャン用の関数を使う
-        symbol_list = scan_volume_symbols.remote(period, tf_list)
+        # 最初の期間でスキャン（全期間で共通の銘柄セットを想定）
+        symbol_list = scan_volume_symbols.remote(period_list[0], tf_list)
         if not symbol_list:
             print("ERROR: Volume内にデータが見つかりません")
             return
         print(f"自動検出された銘柄: {symbol_list}")
-
-    # 期間リスト
-    period_list = [p.strip() for p in period.split(",")]
 
     # 実行ID
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
