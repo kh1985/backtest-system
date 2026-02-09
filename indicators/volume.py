@@ -192,12 +192,20 @@ class VolumeProfile(Indicator):
     """
 
     def __init__(
-        self, lookback: int = 0, n_bins: int = 50, smoothing: int = 3, touch_tolerance: float = 0.5
+        self,
+        lookback: int = 0,
+        n_bins: int = 50,
+        smoothing: int = 3,
+        touch_tolerance: float = 0.5,
+        break_margin: float = 2.0,
+        min_bars_after_break: int = 10,
     ):
         self.lookback = lookback
         self.n_bins = n_bins
         self.smoothing = smoothing
         self.touch_tolerance = touch_tolerance / 100.0  # %を小数に
+        self.break_margin = break_margin / 100.0  # %を小数に
+        self.min_bars_after_break = min_bars_after_break
         self.name = f"vp_{n_bins}"
 
     def calculate(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -292,8 +300,8 @@ class VolumeProfile(Indicator):
         3. 初めて押し戻してきた瞬間 = first_touch（エントリーシグナル）
         """
         n = len(df)
-        break_margin = 0.02
-        min_bars_after_break = 10
+        break_margin = self.break_margin
+        min_bars_after_break = self.min_bars_after_break
 
         # ユニークなLVN価格
         unique_lvns = np.unique(all_lvn_prices)

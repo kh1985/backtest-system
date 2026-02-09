@@ -204,20 +204,30 @@ def _backtest_loop(
                 exit_price = c
                 exited = True
 
-            # TP / SL 判定
+            # TP / SL 判定（同一バー両ヒット時はSL優先＝保守的）
             if not exited:
                 if is_long:
-                    if h >= tp_price:
+                    tp_hit = h >= tp_price
+                    sl_hit = l <= sl_price
+                    if tp_hit and sl_hit:
+                        exit_price = sl_price
+                        exited = True
+                    elif tp_hit:
                         exit_price = tp_price
                         exited = True
-                    elif l <= sl_price:
+                    elif sl_hit:
                         exit_price = sl_price
                         exited = True
                 else:
-                    if l <= tp_price:
+                    tp_hit = l <= tp_price
+                    sl_hit = h >= sl_price
+                    if tp_hit and sl_hit:
+                        exit_price = sl_price
+                        exited = True
+                    elif tp_hit:
                         exit_price = tp_price
                         exited = True
-                    elif h >= sl_price:
+                    elif sl_hit:
                         exit_price = sl_price
                         exited = True
 
@@ -393,19 +403,30 @@ def _backtest_loop_regime_switching(
                 exit_price = c
                 exited = True
 
+            # TP / SL 判定（同一バー両ヒット時はSL優先＝保守的）
             if not exited:
                 if pos_is_long:
-                    if h >= tp_price:
+                    tp_hit = h >= tp_price
+                    sl_hit = l <= sl_price
+                    if tp_hit and sl_hit:
+                        exit_price = sl_price
+                        exited = True
+                    elif tp_hit:
                         exit_price = tp_price
                         exited = True
-                    elif l <= sl_price:
+                    elif sl_hit:
                         exit_price = sl_price
                         exited = True
                 else:
-                    if l <= tp_price:
+                    tp_hit = l <= tp_price
+                    sl_hit = h >= sl_price
+                    if tp_hit and sl_hit:
+                        exit_price = sl_price
+                        exited = True
+                    elif tp_hit:
                         exit_price = tp_price
                         exited = True
-                    elif h >= sl_price:
+                    elif sl_hit:
                         exit_price = sl_price
                         exited = True
 

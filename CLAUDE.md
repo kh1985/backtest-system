@@ -119,6 +119,48 @@ backtest-system/
 - ファイル削除や構造変更は事前確認必須
 - **ユーザーの明示的な指示なく勝手に作業を進めない**
 
+### 禁止事項（探索フェーズで確定済み — 絶対に再試行しないこと）
+
+| カテゴリ | 禁止パターン | 理由 | 確定Step |
+|---------|------------|------|---------|
+| テンプレート | Stoch+BB, MACD+BB, RSI+MACD | 全滅（0% PASS） | Step 5 |
+| テンプレート | 3重複合（例: RSI+BB+Volume） | 条件過剰→トレード数激減→全滅 | Step 7 |
+| テンプレート | VWAP系全6種 | WFA不合格（INJ固有の偽陽性） | Step 13 |
+| テンプレート | trend_pullback_long/short | WFA ROBUST率39%だがPnL -7.5%（探索空間405が大） | Step 13 |
+| テンプレート | vp_pullback_long | OOS 0%（トレード数不足で全滅） | Step 13 |
+| パラメータ | RSI < 29（ロング） | trainで選ばれやすいがOOS全滅の過学習トラップ | Step 8 |
+| パラメータ | RSI > 73 / RSI > 75（ショート） | 全レジームで全滅（ロングの29以下と同パターン） | Step 9 |
+| パラメータ | BB σ > 2.0 | σ拡張は逆効果（σ=2.0: 48%, σ=2.5: 35%） | Step 7 |
+| 方向 | Uptrend × ショート | 理論的に逆張りでリスク大。PASS率高くても除外 | Step 6.5 |
+| 方向 | Downtrend × ロング | 方向不一致 | 原則 |
+| exit | optimizerにexit選択させる | フォールド間切替が不安定性の主因（ROBUST半減） | Step 12 |
+
+### エラー時の行動指針
+
+- **Modal実行エラー**: ログを確認し原因特定→修正→再実行。3回失敗したらユーザーに報告
+- **WFAスクリプトエラー**: `scripts/local_wfa_test.py` のログを確認。データ不足の場合は銘柄をスキップ
+- **OOS PASS率が想定外に低い（<10%）**: テンプレートの探索空間サイズを確認（>100 configsなら過学習の疑い）
+- **テンプレート追加時**: 上記禁止パターンに該当しないか必ず確認してから実装
+
+### 自動検証ループの起動ルール
+
+ユーザーが「自動で検証して」「ループで回して」「チームで検証」等のニュアンスで指示した場合、**必ず以下を確認してから実行**:
+
+1. **モデル選択を聞く**（AskUserQuestionで）:
+   - Opus（判断力重視・コスト高）— 新しいタスク、結果の解釈が必要な場面
+   - Sonnet（コスト効率重視）— WFA実行やYAML作成など定型タスクの繰り返し
+   - Haiku（最安・最速）— 動作確認やテスト
+
+2. **実行形態を聞く**:
+   - Ralph-loop（`scripts/ralph_loop.sh`）— ターミナルで無限ループ。人間不在で回す
+   - セッション内チーム — このセッション内でTeam作成して並列実行。人間が監視
+   - 単発実行 — 1タスクだけ実行して報告
+
+3. **回数制限を聞く**:
+   - `--max-iterations N` or 無制限
+
+勝手にモデルやモードを決めず、ユーザーに選ばせること。
+
 ### 戦略探索ワークフロー（自動ガイド）
 
 セッション開始時にロードマップ（`.claude/memory/roadmap.md`）を読んだ場合、以下を自動で報告:
@@ -149,36 +191,24 @@ backtest-system/
 - ファイル名・ディレクトリ名・関数名・クラス名・コード識別子は英語
 - 明示的に求められない限り英語に切り替えない
 
-## 最適化の運用方針（2026-02-06時点）
+## 最適化の運用方針（2026-02-09 Step 14完了時点）
 
 ### 確定した設定
 - **レジーム検出**: Dual-TF EMA（4h+1h合意方式）。`--super-htf 4h`
-- **Exit profiles**: `atr_compact`（SL=ATR×2.0固定、TP 3択）が標準
+- **Exit profiles**: exit固定が原則。UT=tp20, DT=tp15
 - **OOS**: 必須（train 60% / val 20% / test 20%）
-- **データ期間**: 2年分が推奨
+- **最終検証**: WFA（5フォールド Anchored Walk-Forward）。CR>=0.6が合格基準
+- **データ**: 30銘柄 × 3年(2023-2026) × 15m/1h/4h
 
-### 過学習防止の原則
-- 探索空間は小さく保つ（exit compact, パラメータ数制限）
-- OOSは検出のみ。防止には空間削減が必要
-- 最低トレード数フィルタ（20件以上）を推奨
-- 銘柄横断（symbol_count >= 2）で汎用性を確認
-
-### 一貫した傾向
-- **range > downtrend > uptrend**（OOS通過率の順）
-- Uptrendは過学習しやすく、ほぼ全滅
-- Downtrendは2銘柄(SOL, XRP)でPASS → 横断検証の価値あり
+### 過学習防止の原則（Step 8-14で確定）
+- **探索空間を小さくする = PASS率改善の鍵**
+- exit固定 > exit探索（optimizerにexit選択させない）
+- OOS PASSだけでは不十分 → WFAで最終判定
+- パラメータ固定（RSI=35, BB=20/2σ, EMA=5/13）が最も安定
 
 ### 完全クラウドワークフロー
 ```
-modal run scripts/modal_fetch_data.py     # データ取得（Binance → Volume）
-modal run scripts/modal_optimize.py --exit-profiles atr_compact  # 最適化
-modal run scripts/modal_download.py       # 結果DL
+python3 -m modal run scripts/modal_fetch_data.py     # データ取得
+python3 -m modal run scripts/modal_optimize.py --exit-profiles atr_compact  # 最適化
+python3 -m modal run scripts/modal_download.py       # 結果DL
 ```
-
-## Discussion notes
-
-### 下落トレンド銘柄横断仮説（部分検証済み）
-- ユーザーの仮説: 下落トレンドでは銘柄を問わず特定の戦略が機能するのではないか
-- 検証結果: SOL(ma_crossover +4.9%)とXRP(rsi_reversal +25.5%)でdowntrend PASS確認
-- ただしテンプレート自体は銘柄間で異なる → 「戦略は同じ」ではなく「レジームとしてエッジがある」
-- **次のステップ**: 10銘柄に拡大して横断検証

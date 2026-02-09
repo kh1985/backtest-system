@@ -39,6 +39,7 @@ image = (
     .add_local_dir(".", "/app", copy=True, ignore=[
         "inputdata", "results", "sample_data", "cache",
         ".git", "__pycache__", "*.pyc", ".claude",
+        "CLAUDE.md", "*.bak",
     ])
 )
 

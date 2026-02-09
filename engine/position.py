@@ -37,6 +37,7 @@ class Position:
     highest_price: float = 0.0
     lowest_price: float = float("inf")
     reason: str = ""
+    exit_slippage_pct: float = 0.0  # 出口スリッページ（%）
 
     def __post_init__(self):
         self.highest_price = self.entry_price
@@ -75,24 +76,34 @@ class Position:
             )
 
         if self.side == "long":
-            # TP判定（high >= tp_price）
-            if high >= self.tp_price:
+            tp_hit = high >= self.tp_price
+            sl_hit = low <= self.sl_price
+            if tp_hit and sl_hit:
+                # 同一バーで両方ヒット → 保守的にSL優先
+                return self._create_trade(
+                    self.sl_price, current_time, duration, "SL"
+                )
+            if tp_hit:
                 return self._create_trade(
                     self.tp_price, current_time, duration, "TP"
                 )
-            # SL判定（low <= sl_price）
-            if low <= self.sl_price:
+            if sl_hit:
                 return self._create_trade(
                     self.sl_price, current_time, duration, "SL"
                 )
         else:  # short
-            # TP判定（low <= tp_price）
-            if low <= self.tp_price:
+            tp_hit = low <= self.tp_price
+            sl_hit = high >= self.sl_price
+            if tp_hit and sl_hit:
+                # 同一バーで両方ヒット → 保守的にSL優先
+                return self._create_trade(
+                    self.sl_price, current_time, duration, "SL"
+                )
+            if tp_hit:
                 return self._create_trade(
                     self.tp_price, current_time, duration, "TP"
                 )
-            # SL判定（high >= sl_price）
-            if high >= self.sl_price:
+            if sl_hit:
                 return self._create_trade(
                     self.sl_price, current_time, duration, "SL"
                 )
@@ -106,6 +117,15 @@ class Position:
         duration: int,
         exit_type: str,
     ) -> Trade:
+        # 出口スリッページ適用（SL/TRAILING/FORCED/TIMEOUTは不利方向にずれる）
+        if self.exit_slippage_pct > 0 and exit_type != "TP":
+            if self.side == "long":
+                # ロングの損切り → 価格が下にずれる（より不利）
+                exit_price *= 1 - self.exit_slippage_pct / 100
+            else:
+                # ショートの損切り → 価格が上にずれる（より不利）
+                exit_price *= 1 + self.exit_slippage_pct / 100
+
         if self.side == "long":
             profit_pct = (
                 (exit_price - self.entry_price) / self.entry_price * 100

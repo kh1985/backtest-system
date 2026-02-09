@@ -190,7 +190,7 @@ def run_wfa_for_strategy(
 
         # 判定
         wfe_pass = wfe is not None and wfe > WFE_THRESHOLD
-        cr_pass = cr is not None and cr > CR_THRESHOLD
+        cr_pass = cr is not None and cr >= CR_THRESHOLD
         robust = wfe_pass and cr_pass
 
         regime_result = {
@@ -214,6 +214,7 @@ def main():
     parser.add_argument("--period", type=str, default=",".join(DEFAULT_PERIODS))
     parser.add_argument("--templates", type=str, default="")
     parser.add_argument("--exit-filter", type=str, default="", help="Exit profile名でフィルタ (例: atr_tp20_sl20)")
+    parser.add_argument("--regimes", type=str, default="", help="レジーム指定 (例: downtrend,uptrend)")
     args = parser.parse_args()
 
     inputdata_dir = Path(__file__).resolve().parent.parent / "inputdata"
@@ -225,7 +226,11 @@ def main():
 
     if args.templates:
         template_names = [t.strip() for t in args.templates.split(",")]
-        strategy_regimes = {t: STRATEGY_REGIMES.get(t, ["uptrend", "range"]) for t in template_names}
+        if args.regimes:
+            override_regimes = [r.strip() for r in args.regimes.split(",")]
+            strategy_regimes = {t: override_regimes for t in template_names}
+        else:
+            strategy_regimes = {t: STRATEGY_REGIMES.get(t, ["uptrend", "range"]) for t in template_names}
     else:
         strategy_regimes = STRATEGY_REGIMES
 

@@ -1578,3 +1578,890 @@ _register(StrategyTemplate(
     param_ranges=[],
 ))
 
+
+# =====================================================================
+# Step 13: 2025弱uptrend対応 — 新エントリーパターン探索
+# 現行 rsi_bb_long_f35 (RSI<35 + BB下限) は2025で信号不足
+# → 条件緩和/別ロジックのBB系ロングを4種テスト
+# 全てパラメータ固定、探索空間最小（exit 3択のみ）
+# =====================================================================
+
+# 41. RSI + BB Long (RSI=40 固定 — 閾値緩和版)
+# f35では2025の弱uptrendでRSI<35到達が少ない → RSI<40に緩和
+_register(StrategyTemplate(
+    name="rsi_bb_long_f40",
+    description="RSI<40 + BB下限タッチでロング（RSI閾値緩和版、弱uptrend対応）",
+    config_template={
+        "name": "rsi_bb_long_f40",
+        "side": "long",
+        "indicators": [
+            {"type": "rsi", "period": 14},
+            {"type": "bollinger", "period": 20, "std_dev": 2.0},
+        ],
+        "entry_conditions": [
+            {
+                "type": "threshold",
+                "column": "rsi_14",
+                "operator": "<",
+                "value": 40,
+            },
+            {
+                "type": "column_compare",
+                "column_a": "close",
+                "operator": "<",
+                "column_b": "bb_lower_20",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[],
+))
+
+# 42. BB Middle + RSI Long（中間バンド押し目買い）
+# BB下限ではなくBB中間（SMA20）への押し目 + RSI<45 → 弱uptrendでも頻繁にシグナル
+_register(StrategyTemplate(
+    name="bb_middle_rsi_long",
+    description="close < BB中間バンド + RSI<45でロング（弱uptrend押し目買い）",
+    config_template={
+        "name": "bb_middle_rsi_long",
+        "side": "long",
+        "indicators": [
+            {"type": "rsi", "period": 14},
+            {"type": "bollinger", "period": 20, "std_dev": 2.0},
+        ],
+        "entry_conditions": [
+            {
+                "type": "threshold",
+                "column": "rsi_14",
+                "operator": "<",
+                "value": 45,
+            },
+            {
+                "type": "column_compare",
+                "column_a": "close",
+                "operator": "<",
+                "column_b": "bb_middle_20",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[],
+))
+
+# 43. EMA Cross + BB Long（モメンタム + バリュー）
+# EMA(9)がEMA(21)を上抜け + close < BB中間 → 上昇モメンタム確認 + 割安
+_register(StrategyTemplate(
+    name="ema_cross_bb_long",
+    description="EMA(9)がEMA(21)を上抜け + close < BB中間でロング（モメンタム+バリュー）",
+    config_template={
+        "name": "ema_cross_bb_long",
+        "side": "long",
+        "indicators": [
+            {"type": "ema", "period": 9},
+            {"type": "ema", "period": 21},
+            {"type": "bollinger", "period": 20, "std_dev": 2.0},
+        ],
+        "entry_conditions": [
+            {
+                "type": "crossover",
+                "fast": "ema_9",
+                "slow": "ema_21",
+                "direction": "above",
+            },
+            {
+                "type": "column_compare",
+                "column_a": "close",
+                "operator": "<",
+                "column_b": "bb_middle_20",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[],
+))
+
+# 44. BB Squeeze Long（ボラティリティ収縮→ブレイクアウト）
+# BB bandwidth < 閾値（低ボラ=スクイーズ）+ close > BB中間 → ブレイクアウト初動
+_register(StrategyTemplate(
+    name="bb_squeeze_long",
+    description="BB幅収縮（スクイーズ）+ close > BB中間でロング（ブレイクアウト初動）",
+    config_template={
+        "name": "bb_squeeze_long",
+        "side": "long",
+        "indicators": [
+            {"type": "bollinger", "period": 20, "std_dev": 2.0},
+        ],
+        "entry_conditions": [
+            {
+                "type": "threshold",
+                "column": "bb_width_20",
+                "operator": "<",
+                "value": 0.04,
+            },
+            {
+                "type": "column_compare",
+                "column_a": "close",
+                "operator": ">",
+                "column_b": "bb_middle_20",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[],
+))
+
+# --- Step 14: Downtrend Short 固定テンプレート ---
+
+# 45. Volume Spike Short (固定: rvol_period=20, rvol_threshold=3)
+# OOS 61% PASS in downtrend。パラメータ固定でWFA安定性を検証
+_register(StrategyTemplate(
+    name="volume_spike_short_dt",
+    description="出来高急増(RVOL>3) + 陰線でショート（DT順張り、パラメータ固定）",
+    config_template={
+        "name": "volume_spike_short_dt",
+        "side": "short",
+        "indicators": [
+            {"type": "rvol", "period": 20},
+        ],
+        "entry_conditions": [
+            {
+                "type": "threshold",
+                "column": "rvol_20",
+                "operator": ">",
+                "value": 3,
+            },
+            {
+                "type": "candle",
+                "pattern": "bearish",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[],
+))
+
+# 46. RSI + BB Upper Short (RSI>65固定、DT用)
+# rsi_bb_reversal_shortのRSI=65固定版。RSI>70が最多勝だが65も21勝で汎用性高い
+_register(StrategyTemplate(
+    name="rsi_bb_short_dt65",
+    description="RSI>65 + BB上限タッチでショート（DT戻り売り、RSI=65固定）",
+    config_template={
+        "name": "rsi_bb_short_dt65",
+        "side": "short",
+        "indicators": [
+            {"type": "rsi", "period": 14},
+            {"type": "bollinger", "period": 20, "std_dev": 2.0},
+        ],
+        "entry_conditions": [
+            {
+                "type": "threshold",
+                "column": "rsi_14",
+                "operator": ">",
+                "value": 65,
+            },
+            {
+                "type": "column_compare",
+                "column_a": "close",
+                "operator": ">",
+                "column_b": "bb_upper_20",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[],
+))
+
+# 47. BB Upper + Volume Short (固定: rvol_threshold=2.5)
+# bb_volume_reversal_shortのrvol=2.5固定版。46% OOS PASS
+_register(StrategyTemplate(
+    name="bb_vol_short_dt",
+    description="BB上限タッチ + 出来高急増(RVOL>2.5)でショート（DT固定）",
+    config_template={
+        "name": "bb_vol_short_dt",
+        "side": "short",
+        "indicators": [
+            {"type": "bollinger", "period": 20, "std_dev": 2.0},
+            {"type": "rvol", "period": 20},
+        ],
+        "entry_conditions": [
+            {
+                "type": "column_compare",
+                "column_a": "close",
+                "operator": ">",
+                "column_b": "bb_upper_20",
+            },
+            {
+                "type": "threshold",
+                "column": "rvol_20",
+                "operator": ">",
+                "value": 2.5,
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[],
+))
+
+# --- Step 14b: DT Short 試行錯誤テンプレート ---
+
+# 48. RSI>60 + BB上限ショート（DT中の弱い戻りでもエントリ）
+_register(StrategyTemplate(
+    name="rsi_bb_short_f60",
+    description="RSI>60 + BB上限タッチでショート（DT弱戻りキャッチ）",
+    config_template={
+        "name": "rsi_bb_short_f60",
+        "side": "short",
+        "indicators": [
+            {"type": "rsi", "period": 14},
+            {"type": "bollinger", "period": 20, "std_dev": 2.0},
+        ],
+        "entry_conditions": [
+            {"type": "threshold", "column": "rsi_14", "operator": ">", "value": 60},
+            {"type": "column_compare", "column_a": "close", "operator": ">", "column_b": "bb_upper_20"},
+        ],
+        "entry_logic": "and",
+        "exit": {"take_profit_pct": 2.0, "stop_loss_pct": 1.0},
+    },
+    param_ranges=[],
+))
+
+# 49. RSI>55 + BB中間タッチでショート（DT中はBB中間が抵抗線として機能）
+_register(StrategyTemplate(
+    name="rsi_bb_mid_short_f55",
+    description="RSI>55 + close > BB中間でショート（DT戻りのBB中間抵抗）",
+    config_template={
+        "name": "rsi_bb_mid_short_f55",
+        "side": "short",
+        "indicators": [
+            {"type": "rsi", "period": 14},
+            {"type": "bollinger", "period": 20, "std_dev": 2.0},
+        ],
+        "entry_conditions": [
+            {"type": "threshold", "column": "rsi_14", "operator": ">", "value": 55},
+            {"type": "column_compare", "column_a": "close", "operator": ">", "column_b": "bb_middle_20"},
+        ],
+        "entry_logic": "and",
+        "exit": {"take_profit_pct": 2.0, "stop_loss_pct": 1.0},
+    },
+    param_ranges=[],
+))
+
+# 50. RSI>50 + BB中間ショート（最も緩い条件 — DT中のニュートラル域からの下落）
+_register(StrategyTemplate(
+    name="rsi_bb_mid_short_f50",
+    description="RSI>50 + close > BB中間でショート（DT中の中立域反落）",
+    config_template={
+        "name": "rsi_bb_mid_short_f50",
+        "side": "short",
+        "indicators": [
+            {"type": "rsi", "period": 14},
+            {"type": "bollinger", "period": 20, "std_dev": 2.0},
+        ],
+        "entry_conditions": [
+            {"type": "threshold", "column": "rsi_14", "operator": ">", "value": 50},
+            {"type": "column_compare", "column_a": "close", "operator": ">", "column_b": "bb_middle_20"},
+        ],
+        "entry_logic": "and",
+        "exit": {"take_profit_pct": 2.0, "stop_loss_pct": 1.0},
+    },
+    param_ranges=[],
+))
+
+# 51. EMA(9) < EMA(21) + close > BB中間ショート（トレンド確認 + 戻り）
+_register(StrategyTemplate(
+    name="ema_cross_bb_short",
+    description="EMA(9)<EMA(21) + close > BB中間でショート（DT確認+戻り売り）",
+    config_template={
+        "name": "ema_cross_bb_short",
+        "side": "short",
+        "indicators": [
+            {"type": "ema", "period": 9},
+            {"type": "ema", "period": 21},
+            {"type": "bollinger", "period": 20, "std_dev": 2.0},
+        ],
+        "entry_conditions": [
+            {"type": "crossover", "fast": "ema_9", "slow": "ema_21", "direction": "below"},
+            {"type": "column_compare", "column_a": "close", "operator": ">", "column_b": "bb_middle_20"},
+        ],
+        "entry_logic": "and",
+        "exit": {"take_profit_pct": 2.0, "stop_loss_pct": 1.0},
+    },
+    param_ranges=[],
+))
+
+# 52. RSI>60 + BB中間ショート（RSI60 + BB中間 = DT最適コンボ仮説）
+_register(StrategyTemplate(
+    name="rsi_bb_mid_short_f60",
+    description="RSI>60 + close > BB中間でショート（DT戻り売りのスイートスポット仮説）",
+    config_template={
+        "name": "rsi_bb_mid_short_f60",
+        "side": "short",
+        "indicators": [
+            {"type": "rsi", "period": 14},
+            {"type": "bollinger", "period": 20, "std_dev": 2.0},
+        ],
+        "entry_conditions": [
+            {"type": "threshold", "column": "rsi_14", "operator": ">", "value": 60},
+            {"type": "column_compare", "column_a": "close", "operator": ">", "column_b": "bb_middle_20"},
+        ],
+        "entry_logic": "and",
+        "exit": {"take_profit_pct": 2.0, "stop_loss_pct": 1.0},
+    },
+    param_ranges=[],
+))
+
+# 53. EMAクロスのみショート（BB無し → EMA確認の効果を分離テスト）
+_register(StrategyTemplate(
+    name="ema_cross_short_only",
+    description="EMA(9)<EMA(21)クロスのみでショート（EMA確認効果の分離検証）",
+    config_template={
+        "name": "ema_cross_short_only",
+        "side": "short",
+        "indicators": [
+            {"type": "ema", "period": 9},
+            {"type": "ema", "period": 21},
+        ],
+        "entry_conditions": [
+            {"type": "crossover", "fast": "ema_9", "slow": "ema_21", "direction": "below"},
+        ],
+        "entry_logic": "and",
+        "exit": {"take_profit_pct": 2.0, "stop_loss_pct": 1.0},
+    },
+    param_ranges=[],
+))
+
+# 54. EMA(5) < EMA(13) + BB中間ショート（高速EMAバリエーション）
+_register(StrategyTemplate(
+    name="ema_fast_cross_bb_short",
+    description="EMA(5)<EMA(13) + close > BB中間でショート（高速EMAでDT早期エントリー）",
+    config_template={
+        "name": "ema_fast_cross_bb_short",
+        "side": "short",
+        "indicators": [
+            {"type": "ema", "period": 5},
+            {"type": "ema", "period": 13},
+            {"type": "bollinger", "period": 20, "std_dev": 2.0},
+        ],
+        "entry_conditions": [
+            {"type": "crossover", "fast": "ema_5", "slow": "ema_13", "direction": "below"},
+            {"type": "column_compare", "column_a": "close", "operator": ">", "column_b": "bb_middle_20"},
+        ],
+        "entry_logic": "and",
+        "exit": {"take_profit_pct": 2.0, "stop_loss_pct": 1.0},
+    },
+    param_ranges=[],
+))
+
+# 55. EMA(9)<EMA(21) + RSI>55 + BB中間ショート（トリプル確認）
+_register(StrategyTemplate(
+    name="ema_rsi_bb_short",
+    description="EMA(9)<EMA(21) + RSI>55 + close > BB中間（トリプル確認で精度向上仮説）",
+    config_template={
+        "name": "ema_rsi_bb_short",
+        "side": "short",
+        "indicators": [
+            {"type": "ema", "period": 9},
+            {"type": "ema", "period": 21},
+            {"type": "rsi", "period": 14},
+            {"type": "bollinger", "period": 20, "std_dev": 2.0},
+        ],
+        "entry_conditions": [
+            {"type": "crossover", "fast": "ema_9", "slow": "ema_21", "direction": "below"},
+            {"type": "threshold", "column": "rsi_14", "operator": ">", "value": 55},
+            {"type": "column_compare", "column_a": "close", "operator": ">", "column_b": "bb_middle_20"},
+        ],
+        "entry_logic": "and",
+        "exit": {"take_profit_pct": 2.0, "stop_loss_pct": 1.0},
+    },
+    param_ranges=[],
+))
+
+# =====================================================================
+# VP Deep Dive テンプレート（Step 14: VP複合条件探索）
+# vp_pullback_long のトレード数不足を解決するため、
+# パラメータ緩和・複合条件・POC/HVN活用・ショート版の6種を追加
+# =====================================================================
+
+# 56. VP Pullback Wide（パラメータ緩和版）
+# n_bins小＝粗いプロファイル＝LVN検出しやすい、tolerance大＝タッチ判定緩い
+# break_margin小＝ブレイク判定緩い、min_bars_after_break小＝再タッチまでの待機短い
+_register(StrategyTemplate(
+    name="vp_pullback_wide",
+    description="VP LVN初タッチ（パラメータ緩和版: 粗いビン・広いタッチ判定でシグナル頻度UP）",
+    config_template={
+        "name": "vp_pullback_wide",
+        "side": "long",
+        "indicators": [
+            {
+                "type": "volume_profile",
+                "n_bins": "{n_bins}",
+                "smoothing": 3,
+                "touch_tolerance": "{touch_tolerance}",
+                "break_margin": "{break_margin}",
+                "min_bars_after_break": "{min_bars_after_break}",
+            },
+        ],
+        "entry_conditions": [
+            {
+                "type": "threshold",
+                "column": "vp_lvn_first_touch",
+                "operator": "==",
+                "value": 1,
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {"take_profit_pct": 2.0, "stop_loss_pct": 1.0},
+    },
+    param_ranges=[
+        ParameterRange("n_bins", 20, 40, 10, "int"),
+        ParameterRange("touch_tolerance", 1.0, 2.0, 0.5, "float"),
+        ParameterRange("break_margin", 1.0, 3.0, 1.0, "float"),
+        ParameterRange("min_bars_after_break", 3, 7, 2, "int"),
+    ],
+))
+
+# 57. VP + RSI Pullback Long（LVN初タッチ + RSI売られすぎ）
+# VP単体のシグナルにRSIフィルタを追加し、押し目の質を向上
+_register(StrategyTemplate(
+    name="vp_rsi_pullback_long",
+    description="VP LVN初タッチ + RSI<40 でロング（VP押し目 + RSI売られすぎの複合）",
+    config_template={
+        "name": "vp_rsi_pullback_long",
+        "side": "long",
+        "indicators": [
+            {
+                "type": "volume_profile",
+                "n_bins": "{n_bins}",
+                "smoothing": 3,
+                "touch_tolerance": "{touch_tolerance}",
+                "break_margin": "{break_margin}",
+                "min_bars_after_break": "{min_bars_after_break}",
+            },
+            {"type": "rsi", "period": 14},
+        ],
+        "entry_conditions": [
+            {
+                "type": "threshold",
+                "column": "vp_lvn_first_touch",
+                "operator": "==",
+                "value": 1,
+            },
+            {
+                "type": "threshold",
+                "column": "rsi_14",
+                "operator": "<",
+                "value": "{rsi_threshold}",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {"take_profit_pct": 2.0, "stop_loss_pct": 1.0},
+    },
+    param_ranges=[
+        ParameterRange("n_bins", 20, 40, 10, "int"),
+        ParameterRange("touch_tolerance", 1.0, 2.0, 0.5, "float"),
+        ParameterRange("break_margin", 1.0, 3.0, 1.0, "float"),
+        ParameterRange("min_bars_after_break", 3, 7, 2, "int"),
+        ParameterRange("rsi_threshold", 35, 45, 5, "int"),
+    ],
+))
+
+# 58. VP + BB Pullback Long（LVN初タッチ + BB下半分）
+# BBミドルより下 = 平均以下の価格でVPシグナルが出た場合のみエントリー
+_register(StrategyTemplate(
+    name="vp_bb_pullback_long",
+    description="VP LVN初タッチ + close < BB中間でロング（VP押し目 + BB下半分フィルタ）",
+    config_template={
+        "name": "vp_bb_pullback_long",
+        "side": "long",
+        "indicators": [
+            {
+                "type": "volume_profile",
+                "n_bins": "{n_bins}",
+                "smoothing": 3,
+                "touch_tolerance": "{touch_tolerance}",
+                "break_margin": "{break_margin}",
+                "min_bars_after_break": "{min_bars_after_break}",
+            },
+            {"type": "bollinger", "period": 20, "std_dev": 2.0},
+        ],
+        "entry_conditions": [
+            {
+                "type": "threshold",
+                "column": "vp_lvn_first_touch",
+                "operator": "==",
+                "value": 1,
+            },
+            {
+                "type": "column_compare",
+                "column_a": "close",
+                "operator": "<",
+                "column_b": "bb_middle_20",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {"take_profit_pct": 2.0, "stop_loss_pct": 1.0},
+    },
+    param_ranges=[
+        ParameterRange("n_bins", 20, 40, 10, "int"),
+        ParameterRange("touch_tolerance", 1.0, 2.0, 0.5, "float"),
+        ParameterRange("break_margin", 1.0, 3.0, 1.0, "float"),
+        ParameterRange("min_bars_after_break", 3, 7, 2, "int"),
+    ],
+))
+
+# 59. VP POC + RSI Long（POC近辺 + RSI売られすぎ）
+# first_touchに依存しない新しいVPシグナル: POCへの接近をエントリーに使用
+# POCは最大出来高価格 = 強力なサポート/レジスタンス
+_register(StrategyTemplate(
+    name="vp_poc_rsi_long",
+    description="close <= VP POC + RSI<45 でロング（POCサポート + RSI押し目の複合）",
+    config_template={
+        "name": "vp_poc_rsi_long",
+        "side": "long",
+        "indicators": [
+            {
+                "type": "volume_profile",
+                "n_bins": "{n_bins}",
+                "smoothing": 3,
+                "touch_tolerance": 0.5,
+            },
+            {"type": "rsi", "period": 14},
+        ],
+        "entry_conditions": [
+            {
+                "type": "column_compare",
+                "column_a": "close",
+                "operator": "<=",
+                "column_b": "vp_poc",
+            },
+            {
+                "type": "threshold",
+                "column": "rsi_14",
+                "operator": "<",
+                "value": "{rsi_threshold}",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {"take_profit_pct": 2.0, "stop_loss_pct": 1.0},
+    },
+    param_ranges=[
+        ParameterRange("n_bins", 30, 50, 10, "int"),
+        ParameterRange("rsi_threshold", 35, 45, 5, "int"),
+    ],
+))
+
+# 60. VP HVN + RSI Long（HVNサポート + RSI売られすぎ）
+# HVN = 出来高集中ゾーン = 強いサポート。POCより柔軟で複数検出される
+_register(StrategyTemplate(
+    name="vp_hvn_rsi_long",
+    description="close <= VP HVN_1 + RSI<45 でロング（HVNサポート + RSI押し目の複合）",
+    config_template={
+        "name": "vp_hvn_rsi_long",
+        "side": "long",
+        "indicators": [
+            {
+                "type": "volume_profile",
+                "n_bins": "{n_bins}",
+                "smoothing": 3,
+                "touch_tolerance": 0.5,
+            },
+            {"type": "rsi", "period": 14},
+        ],
+        "entry_conditions": [
+            {
+                "type": "column_compare",
+                "column_a": "close",
+                "operator": "<=",
+                "column_b": "vp_hvn_1",
+            },
+            {
+                "type": "threshold",
+                "column": "rsi_14",
+                "operator": "<",
+                "value": "{rsi_threshold}",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {"take_profit_pct": 2.0, "stop_loss_pct": 1.0},
+    },
+    param_ranges=[
+        ParameterRange("n_bins", 30, 50, 10, "int"),
+        ParameterRange("rsi_threshold", 35, 45, 5, "int"),
+    ],
+))
+
+# 61. VP Pullback Short（LVN初タッチ ショート版）
+# LVNを上に突き抜けた後の戻りでショート（レジスタンスとして機能する仮説）
+_register(StrategyTemplate(
+    name="vp_pullback_short",
+    description="VP LVN初タッチでショート（LVNレジスタンス仮説: DT向け）",
+    config_template={
+        "name": "vp_pullback_short",
+        "side": "short",
+        "indicators": [
+            {
+                "type": "volume_profile",
+                "n_bins": "{n_bins}",
+                "smoothing": 3,
+                "touch_tolerance": "{touch_tolerance}",
+                "break_margin": "{break_margin}",
+                "min_bars_after_break": "{min_bars_after_break}",
+            },
+        ],
+        "entry_conditions": [
+            {
+                "type": "threshold",
+                "column": "vp_lvn_first_touch",
+                "operator": "==",
+                "value": 1,
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {"take_profit_pct": 2.0, "stop_loss_pct": 1.0},
+    },
+    param_ranges=[
+        ParameterRange("n_bins", 20, 40, 10, "int"),
+        ParameterRange("touch_tolerance", 1.0, 2.0, 0.5, "float"),
+        ParameterRange("break_margin", 1.0, 3.0, 1.0, "float"),
+        ParameterRange("min_bars_after_break", 3, 7, 2, "int"),
+    ],
+))
+
+# 62. ADX + BB Long (Uptrend向け — トレンド強度フィルタ)
+# ADXが高い = トレンドが明確 → BB下限タッチからの反発が信頼性高い
+_register(StrategyTemplate(
+    name="adx_bb_long",
+    description="ADX>=閾値（強トレンド確認） + BB下限タッチでロング",
+    config_template={
+        "name": "adx_bb_long",
+        "side": "long",
+        "indicators": [
+            {"type": "adx", "period": 14},
+            {"type": "bollinger", "period": 20, "std_dev": 2.0},
+        ],
+        "entry_conditions": [
+            {
+                "type": "threshold",
+                "column": "adx_14",
+                "operator": ">=",
+                "value": "{adx_threshold}",
+            },
+            {
+                "type": "column_compare",
+                "column_a": "close",
+                "operator": "<",
+                "column_b": "bb_lower_20",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[
+        ParameterRange("adx_threshold", 20, 30, 5, "int"),
+    ],
+))
+
+# 63. ADX + BB Short (Downtrend向け — トレンド強度フィルタ)
+# ADXが高い = トレンドが明確 → BB上限タッチからの反落が信頼性高い
+_register(StrategyTemplate(
+    name="adx_bb_short",
+    description="ADX>=閾値（強トレンド確認） + BB上限タッチでショート",
+    config_template={
+        "name": "adx_bb_short",
+        "side": "short",
+        "indicators": [
+            {"type": "adx", "period": 14},
+            {"type": "bollinger", "period": 20, "std_dev": 2.0},
+        ],
+        "entry_conditions": [
+            {
+                "type": "threshold",
+                "column": "adx_14",
+                "operator": ">=",
+                "value": "{adx_threshold}",
+            },
+            {
+                "type": "column_compare",
+                "column_a": "close",
+                "operator": ">",
+                "column_b": "bb_upper_20",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[
+        ParameterRange("adx_threshold", 20, 30, 5, "int"),
+    ],
+))
+
+# 64. EMA(5)>EMA(13) + BB中間ロング（DT成功パターンのUT完全ミラー）
+# DT版 ema_fast_cross_bb_short (ROBUST 24%) のロング反転版
+_register(StrategyTemplate(
+    name="ema_fast_cross_bb_long",
+    description="EMA(5)>EMA(13) + close < BB中間でロング（高速EMAでUT押し目エントリー）",
+    config_template={
+        "name": "ema_fast_cross_bb_long",
+        "side": "long",
+        "indicators": [
+            {"type": "ema", "period": 5},
+            {"type": "ema", "period": 13},
+            {"type": "bollinger", "period": 20, "std_dev": 2.0},
+        ],
+        "entry_conditions": [
+            {"type": "crossover", "fast": "ema_5", "slow": "ema_13", "direction": "above"},
+            {"type": "column_compare", "column_a": "close", "operator": "<", "column_b": "bb_middle_20"},
+        ],
+        "entry_logic": "and",
+        "exit": {"take_profit_pct": 2.0, "stop_loss_pct": 1.0},
+    },
+    param_ranges=[],
+))
+
+# 65. EMA(5)>EMA(13) + BB下限ロング（押し目が深い版）— crossover版はトレード不足で全滅
+# UT向け：上昇モメンタム確認 + BB下限タッチの深い押し目
+_register(StrategyTemplate(
+    name="ema_fast_bb_lower_long",
+    description="EMA(5)>EMA(13) + close < BB下限でロング（深い押し目版）",
+    config_template={
+        "name": "ema_fast_bb_lower_long",
+        "side": "long",
+        "indicators": [
+            {"type": "ema", "period": 5},
+            {"type": "ema", "period": 13},
+            {"type": "bollinger", "period": 20, "std_dev": 2.0},
+        ],
+        "entry_conditions": [
+            {"type": "crossover", "fast": "ema_5", "slow": "ema_13", "direction": "above"},
+            {"type": "column_compare", "column_a": "close", "operator": "<", "column_b": "bb_lower_20"},
+        ],
+        "entry_logic": "and",
+        "exit": {"take_profit_pct": 2.0, "stop_loss_pct": 1.0},
+    },
+    param_ranges=[],
+))
+
+# 66. EMA(5)>EMA(13)状態確認 + BB下限ロング（状態型 — crossover瞬間ではない）
+# crossover版はトレード不足→状態確認に変更。UT向け押し目
+_register(StrategyTemplate(
+    name="ema_state_bb_lower_long",
+    description="EMA(5)>EMA(13)状態 + close < BB下限でロング（状態型で十分なトレード数確保）",
+    config_template={
+        "name": "ema_state_bb_lower_long",
+        "side": "long",
+        "indicators": [
+            {"type": "ema", "period": 5},
+            {"type": "ema", "period": 13},
+            {"type": "bollinger", "period": 20, "std_dev": 2.0},
+        ],
+        "entry_conditions": [
+            {"type": "column_compare", "column_a": "ema_5", "operator": ">", "column_b": "ema_13"},
+            {"type": "column_compare", "column_a": "close", "operator": "<", "column_b": "bb_lower_20"},
+        ],
+        "entry_logic": "and",
+        "exit": {"take_profit_pct": 2.0, "stop_loss_pct": 1.0},
+    },
+    param_ranges=[],
+))
+
+# 67. EMA(5)>EMA(13)状態確認 + BB中間ロング（DT成功パターンの完全ミラー — 状態型）
+# 結果: UT向けPnLマイナス。EMAモメンタム確認はUT側では機能しない
+_register(StrategyTemplate(
+    name="ema_state_bb_mid_long",
+    description="EMA(5)>EMA(13)状態 + close < BB中間でロング（DT成功パターンのUTミラー）",
+    config_template={
+        "name": "ema_state_bb_mid_long",
+        "side": "long",
+        "indicators": [
+            {"type": "ema", "period": 5},
+            {"type": "ema", "period": 13},
+            {"type": "bollinger", "period": 20, "std_dev": 2.0},
+        ],
+        "entry_conditions": [
+            {"type": "column_compare", "column_a": "ema_5", "operator": ">", "column_b": "ema_13"},
+            {"type": "column_compare", "column_a": "close", "operator": "<", "column_b": "bb_middle_20"},
+        ],
+        "entry_logic": "and",
+        "exit": {"take_profit_pct": 2.0, "stop_loss_pct": 1.0},
+    },
+    param_ranges=[],
+))
+
+# 68. +DI > -DI 状態確認 + BB下限ロング（方向性DIフィルタ）
+# ADXは強度、+DI/-DIは方向性。+DI>-DI = 上昇方向確認 + BB下限押し目
+_register(StrategyTemplate(
+    name="di_bb_lower_long",
+    description="+DI>-DI（上昇方向確認） + close < BB下限でロング",
+    config_template={
+        "name": "di_bb_lower_long",
+        "side": "long",
+        "indicators": [
+            {"type": "adx", "period": 14},
+            {"type": "bollinger", "period": 20, "std_dev": 2.0},
+        ],
+        "entry_conditions": [
+            {"type": "column_compare", "column_a": "plus_di_14", "operator": ">", "column_b": "minus_di_14"},
+            {"type": "column_compare", "column_a": "close", "operator": "<", "column_b": "bb_lower_20"},
+        ],
+        "entry_logic": "and",
+        "exit": {"take_profit_pct": 2.0, "stop_loss_pct": 1.0},
+    },
+    param_ranges=[],
+))
+
+# 69. -DI > +DI 状態確認 + BB上限ショート（方向性DIフィルタ DT版）
+# -DI>+DI = 下降方向確認 + BB上限からの反落
+_register(StrategyTemplate(
+    name="di_bb_upper_short",
+    description="-DI>+DI（下降方向確認） + close > BB上限でショート",
+    config_template={
+        "name": "di_bb_upper_short",
+        "side": "short",
+        "indicators": [
+            {"type": "adx", "period": 14},
+            {"type": "bollinger", "period": 20, "std_dev": 2.0},
+        ],
+        "entry_conditions": [
+            {"type": "column_compare", "column_a": "minus_di_14", "operator": ">", "column_b": "plus_di_14"},
+            {"type": "column_compare", "column_a": "close", "operator": ">", "column_b": "bb_upper_20"},
+        ],
+        "entry_logic": "and",
+        "exit": {"take_profit_pct": 2.0, "stop_loss_pct": 1.0},
+    },
+    param_ranges=[],
+))
+

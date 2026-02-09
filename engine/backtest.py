@@ -39,11 +39,15 @@ class BacktestEngine:
         initial_capital: float = 10000.0,
         commission_pct: float = 0.0,
         slippage_pct: float = 0.0,
+        entry_on_next_open: bool = False,
+        exit_slippage_pct: float = 0.0,
     ):
         self.strategy = strategy
         self.initial_capital = initial_capital
         self.commission_pct = commission_pct
         self.slippage_pct = slippage_pct
+        self.entry_on_next_open = entry_on_next_open
+        self.exit_slippage_pct = exit_slippage_pct
 
     def run(self, df: pd.DataFrame) -> BacktestResult:
         """
@@ -61,10 +65,18 @@ class BacktestEngine:
         trades: List[Trade] = []
         portfolio = Portfolio(self.initial_capital)
         position: Optional[Position] = None
+        pending_signal = None  # entry_on_next_open用
 
         for i in range(1, len(df)):
             row = df.iloc[i]
             prev_row = df.iloc[i - 1]
+
+            # 前バーのシグナルを今バーのopenで約定（entry_on_next_open）
+            if pending_signal is not None and position is None:
+                position = self._open_position(
+                    row, i, pending_signal, use_open=True
+                )
+                pending_signal = None
 
             # 決済判定
             if position is not None:
@@ -78,10 +90,13 @@ class BacktestEngine:
                     position = None
 
             # エントリー判定
-            if position is None:
+            if position is None and pending_signal is None:
                 signal = self.strategy.check_entry(row, prev_row)
                 if signal:
-                    position = self._open_position(row, i, signal)
+                    if self.entry_on_next_open:
+                        pending_signal = signal
+                    else:
+                        position = self._open_position(row, i, signal)
 
         # 未決済ポジションの強制決済
         if position is not None:
@@ -98,9 +113,11 @@ class BacktestEngine:
             df=df,
         )
 
-    def _open_position(self, row, index, signal) -> Position:
+    def _open_position(
+        self, row, index, signal, use_open: bool = False
+    ) -> Position:
         """ポジションを開く"""
-        entry_price = row["close"]
+        entry_price = row["open"] if use_open else row["close"]
 
         # スリッページ適用
         if self.slippage_pct > 0:
@@ -128,6 +145,7 @@ class BacktestEngine:
             trailing_stop_pct=exit_rule.trailing_stop_pct,
             timeout_bars=exit_rule.timeout_bars,
             reason=signal.reason,
+            exit_slippage_pct=self.exit_slippage_pct,
         )
 
     def _force_close(self, position, row, index) -> Trade:
