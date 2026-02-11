@@ -158,6 +158,31 @@ class TestCompositeScore:
         )
         assert score == 0.0
 
+    def test_low_trades_confidence_decay(self):
+        """同一指標でもトレード件数が少ないほどスコアが減衰する"""
+        common = dict(
+            profit_factor=2.0,
+            win_rate=60.0,
+            max_drawdown_pct=10.0,
+            sharpe_ratio=1.0,
+            total_return_pct=20.0,
+        )
+        low = calculate_composite_score(**common, total_trades=10)
+        high = calculate_composite_score(**common, total_trades=200)
+        assert low < high
+
+    def test_extreme_inputs_are_clipped(self):
+        """極端な入力でも有限スコアが返る"""
+        score = calculate_composite_score(
+            profit_factor=-999.0,
+            win_rate=999.0,
+            max_drawdown_pct=-50.0,
+            sharpe_ratio=999.0,
+            total_return_pct=9999.0,
+            total_trades=50,
+        )
+        assert 0.0 <= score <= 1.0
+
 
 # ---------------------------------------------------------------------------
 # detect_overfitting_warnings

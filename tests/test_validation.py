@@ -315,6 +315,41 @@ class TestRunValidatedOptimization:
         # PF>2.0, trades<30, OOS劣化 の3つの警告
         assert len(result.overfitting_warnings) >= 2
 
+    def test_validation_tie_break_prefers_lower_warning_entry(self):
+        """同点時は過学習警告が少ない候補を優先する"""
+        import pandas as pd
+
+        mock_opt = MagicMock()
+
+        # Train: 同点スコア
+        entry_warn = _make_entry(
+            template="warn", score=0.8, regime="uptrend",
+            profit_factor=3.0, total_trades=10, total_profit_pct=40.0,
+        )
+        entry_clean = _make_entry(
+            template="clean", score=0.8, regime="uptrend",
+            profit_factor=1.2, total_trades=120, total_profit_pct=12.0,
+        )
+        train_result = OptimizationResultSet(entries=[entry_warn, entry_clean])
+
+        # Val: 渡されたconfigのtemplateをそのままベストとして返す
+        val_result = OptimizationResultSet(entries=[entry_clean])
+        test_result = OptimizationResultSet(entries=[entry_clean])
+        mock_opt.run.side_effect = [train_result, val_result, test_result]
+
+        df = pd.DataFrame({"close": range(200)})
+        configs = [{"_template_name": "t", "_params": {}, "indicators": []}]
+
+        result = run_validated_optimization(
+            df=df,
+            all_configs=configs,
+            target_regimes=["uptrend"],
+            split_config=DataSplitConfig(top_n_for_val=1),
+            optimizer=mock_opt,
+        )
+
+        assert result.val_best["uptrend"].template_name == "clean"
+
     def test_progress_callback(self):
         """進捗コールバックが呼ばれる"""
         import pandas as pd

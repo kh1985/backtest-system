@@ -90,6 +90,23 @@ def _rebuild_configs_from_entries(
     return configs
 
 
+def _rank_entries_for_validation(entries: List[OptimizationEntry]) -> List[OptimizationEntry]:
+    """Validation候補をスコア優先で並べ、同点時は過学習警告が少ない方を優先。"""
+    decorated = []
+    for e in entries:
+        warning_count = len(detect_overfitting_warnings(e.metrics))
+        decorated.append((e, warning_count))
+
+    decorated.sort(
+        key=lambda x: (
+            -x[0].composite_score,
+            x[1],
+            -x[0].metrics.total_trades,
+        )
+    )
+    return [x[0] for x in decorated]
+
+
 def run_validated_optimization(
     df: pd.DataFrame,
     all_configs: List[Dict[str, Any]],
@@ -162,7 +179,7 @@ def run_validated_optimization(
 
     for regime in target_regimes:
         regime_results = train_results.filter_regime(regime)
-        ranked_all = regime_results.ranked()
+        ranked_all = _rank_entries_for_validation(regime_results.entries)
 
         # min_trades フィルタ: 統計的に不十分なエントリーを除外
         min_t = split_config.min_trades_for_val

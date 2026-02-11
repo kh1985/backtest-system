@@ -204,13 +204,15 @@ class TestBacktestLoopATR:
     def test_backward_compat_no_atr(self):
         """use_atr_exit=False → 従来の固定%モードと同じ動作"""
         high, low, close = self._make_price_data()
+        open_ = close.copy()
         n = len(high)
         signals = np.zeros(n, dtype=np.bool_)
         signals[10::50] = True  # 50本ごとにエントリー
         mask = np.ones(n, dtype=np.bool_)
 
         profit_pcts, durations, equity = _backtest_loop(
-            high, low, close, signals, mask,
+            open_, high, low, close, signals, mask,
+            entry_on_next_open=False,
             is_long=True, tp_pct=2.0, sl_pct=1.0,
             trailing_pct=0.0, timeout_bars=0,
             commission_pct=0.04, slippage_pct=0.0,
@@ -233,6 +235,7 @@ class TestBacktestLoopATR:
     def test_atr_mode_produces_trades(self):
         """ATRモードでトレードが発生する"""
         high, low, close = self._make_price_data()
+        open_ = close.copy()
         n = len(high)
         atr = compute_atr_numpy(high, low, close, period=14)
         signals = np.zeros(n, dtype=np.bool_)
@@ -240,7 +243,8 @@ class TestBacktestLoopATR:
         mask = np.ones(n, dtype=np.bool_)
 
         profit_pcts, durations, equity = _backtest_loop(
-            high, low, close, signals, mask,
+            open_, high, low, close, signals, mask,
+            entry_on_next_open=False,
             is_long=True, tp_pct=0.0, sl_pct=0.0,
             trailing_pct=0.0, timeout_bars=0,
             commission_pct=0.04, slippage_pct=0.0,
@@ -263,6 +267,7 @@ class TestBacktestLoopATR:
         """SLなし + タイムアウト: 全トレードがタイムアウトで決済"""
         n = 500
         close = np.full(n, 100.0)
+        open_ = close.copy()
         high = np.full(n, 100.5)
         low = np.full(n, 99.5)
 
@@ -271,7 +276,8 @@ class TestBacktestLoopATR:
         mask = np.ones(n, dtype=np.bool_)
 
         profit_pcts, durations, equity = _backtest_loop(
-            high, low, close, signals, mask,
+            open_, high, low, close, signals, mask,
+            entry_on_next_open=False,
             is_long=True, tp_pct=0.0, sl_pct=0.0,
             trailing_pct=0.0, timeout_bars=30,
             commission_pct=0.04, slippage_pct=0.0,
@@ -298,6 +304,7 @@ class TestBacktestLoopATR:
         close = np.zeros(n)
         close[:50] = np.linspace(100, 110, 50)  # 上昇
         close[50:] = np.linspace(110, 105, 50)  # 下落
+        open_ = close.copy()
 
         high = close + 0.5
         low = close - 0.5
@@ -311,7 +318,8 @@ class TestBacktestLoopATR:
 
         # ATRベーストレーリング: トレーリング幅 = ATR × 1.5
         profit_pcts, durations, equity = _backtest_loop(
-            high, low, close, signals, mask,
+            open_, high, low, close, signals, mask,
+            entry_on_next_open=False,
             is_long=True, tp_pct=0.0, sl_pct=0.0,
             trailing_pct=0.0, timeout_bars=0,
             commission_pct=0.04, slippage_pct=0.0,
@@ -332,3 +340,38 @@ class TestBacktestLoopATR:
         assert len(profit_pcts) == 1
         # 上昇してから反転で決済 → プラス収益
         assert profit_pcts[0] > 0
+
+    def test_next_open_skips_last_bar_entry(self):
+        """次足始値約定時は末尾バーの新規エントリーを無視する"""
+        n = 40
+        close = np.full(n, 100.0)
+        open_ = close.copy()
+        high = np.full(n, 101.5)
+        low = np.full(n, 98.5)
+
+        signals = np.zeros(n, dtype=np.bool_)
+        signals[5] = True
+        signals[n - 1] = True  # このシグナルは約定不可
+        mask = np.ones(n, dtype=np.bool_)
+
+        profit_pcts, durations, equity = _backtest_loop(
+            open_, high, low, close, signals, mask,
+            entry_on_next_open=True,
+            is_long=True, tp_pct=1.0, sl_pct=1.0,
+            trailing_pct=0.0, timeout_bars=0,
+            commission_pct=0.04, slippage_pct=0.0,
+            initial_capital=10000.0,
+            atr=np.empty(0, dtype=np.float64),
+            use_atr_exit=False,
+            atr_tp_mult=0.0, atr_sl_mult=0.0,
+            bb_upper=np.empty(0, dtype=np.float64),
+            bb_lower=np.empty(0, dtype=np.float64),
+            use_bb_exit=False,
+            vwap_upper=np.empty(0, dtype=np.float64),
+            vwap_lower=np.empty(0, dtype=np.float64),
+            use_vwap_exit=False,
+            use_atr_trailing=False,
+            atr_trailing_mult=0.0,
+        )
+        assert len(profit_pcts) == 1
+        assert len(equity) == 2
