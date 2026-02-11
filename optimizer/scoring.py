@@ -15,11 +15,11 @@ import numpy as np
 @dataclass
 class ScoringWeights:
     """スコア重み"""
-    profit_factor: float = 0.2
+    profit_factor: float = 0.15
     win_rate: float = 0.2
-    max_drawdown: float = 0.2
+    max_drawdown: float = 0.3
     sharpe_ratio: float = 0.2
-    total_return: float = 0.2
+    total_return: float = 0.15
 
     def validate(self) -> bool:
         total = (
@@ -40,6 +40,9 @@ def calculate_composite_score(
     total_return_pct: float = 0.0,
     total_trades: Optional[int] = None,
     weights: ScoringWeights = None,
+    min_trades_for_confidence: int = 30,
+    full_confidence_trades: int = 120,
+    min_confidence_factor: float = 0.25,
 ) -> float:
     """
     複合スコアを算出（0.0 ~ 1.0）
@@ -78,7 +81,7 @@ def calculate_composite_score(
     return_clipped = np.clip(total_return_pct, -50, 100)
     return_norm = (return_clipped + 50) / 150.0  # -50→0, 100→1
 
-    score = (
+    raw_score = (
         pf_norm * weights.profit_factor
         + wr_norm * weights.win_rate
         + dd_norm * weights.max_drawdown
@@ -86,7 +89,42 @@ def calculate_composite_score(
         + return_norm * weights.total_return
     )
 
+    confidence = _trade_confidence_factor(
+        total_trades=total_trades,
+        min_trades_for_confidence=min_trades_for_confidence,
+        full_confidence_trades=full_confidence_trades,
+        min_confidence_factor=min_confidence_factor,
+    )
+    score = raw_score * confidence
     return float(np.clip(score, 0, 1))
+
+
+def _trade_confidence_factor(
+    total_trades: Optional[int],
+    min_trades_for_confidence: int,
+    full_confidence_trades: int,
+    min_confidence_factor: float,
+) -> float:
+    """トレード件数に応じた信頼度係数を返す。"""
+    if total_trades is None:
+        return 1.0
+    if total_trades <= 0:
+        return 0.0
+
+    min_t = max(int(min_trades_for_confidence), 1)
+    full_t = max(int(full_confidence_trades), min_t)
+    min_factor = float(np.clip(min_confidence_factor, 0.0, 1.0))
+
+    if total_trades >= full_t:
+        return 1.0
+    if total_trades <= min_t:
+        # 閾値未満は強く減衰
+        ratio = max(total_trades / min_t, 0.0)
+        return min_factor + (1.0 - min_factor) * ratio * 0.5
+
+    # 閾値〜フル信頼の間は線形補間
+    ratio = (total_trades - min_t) / max(full_t - min_t, 1)
+    return min_factor + (1.0 - min_factor) * (0.5 + 0.5 * ratio)
 
 
 def detect_overfitting_warnings(

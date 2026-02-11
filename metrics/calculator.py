@@ -11,6 +11,8 @@ import numpy as np
 
 from engine.position import Trade
 
+DEFAULT_BARS_PER_YEAR = 365 * 24 * 4  # 15m
+
 
 @dataclass
 class BacktestMetrics:
@@ -36,6 +38,7 @@ class BacktestMetrics:
 def calculate_metrics(
     trades: List[Trade],
     equity_curve: List[float],
+    bars_per_year: int = DEFAULT_BARS_PER_YEAR,
 ) -> BacktestMetrics:
     """トレードリストとエクイティカーブからメトリクスを算出"""
     if not trades:
@@ -63,12 +66,7 @@ def calculate_metrics(
 
     # シャープレシオ（std が極小の場合に巨大値になるのを防止）
     returns = np.diff(eq) / eq[:-1] if len(eq) > 1 else np.array([])
-    if len(returns) > 1 and np.std(returns) > 1e-10:
-        sharpe = float(np.mean(returns) / np.std(returns) * np.sqrt(252))
-        if not np.isfinite(sharpe):
-            sharpe = 0.0
-    else:
-        sharpe = 0.0
+    sharpe = _compute_annualized_sharpe(returns, bars_per_year)
 
     # 累積リターン
     cumulative = np.cumsum(profits).tolist()
@@ -97,6 +95,7 @@ def calculate_metrics_from_arrays(
     profit_pcts: np.ndarray,
     durations: np.ndarray,
     equity_curve: np.ndarray,
+    bars_per_year: int = DEFAULT_BARS_PER_YEAR,
 ) -> BacktestMetrics:
     """numpy配列からメトリクスを算出（Numbaループ用）"""
     if len(profit_pcts) == 0:
@@ -120,12 +119,7 @@ def calculate_metrics_from_arrays(
     max_dd = float(np.max(drawdown)) if len(drawdown) > 0 else 0.0
 
     returns = np.diff(equity_curve) / equity_curve[:-1] if len(equity_curve) > 1 else np.array([])
-    if len(returns) > 1 and np.std(returns) > 1e-10:
-        sharpe = float(np.mean(returns) / np.std(returns) * np.sqrt(252))
-        if not np.isfinite(sharpe):
-            sharpe = 0.0
-    else:
-        sharpe = 0.0
+    sharpe = _compute_annualized_sharpe(returns, bars_per_year)
 
     cumulative = np.cumsum(profits).tolist()
 
@@ -170,3 +164,18 @@ def _empty_metrics(equity_curve: List[float] = None) -> BacktestMetrics:
         cumulative_returns=[],
         drawdown_series=[],
     )
+
+
+def _compute_annualized_sharpe(returns: np.ndarray, bars_per_year: int) -> float:
+    """バー次元リターンのSharpeを年率化して返す。"""
+    if len(returns) <= 1:
+        return 0.0
+    std = float(np.std(returns))
+    if std <= 1e-10:
+        return 0.0
+
+    annualizer = np.sqrt(max(int(bars_per_year), 1))
+    sharpe = float(np.mean(returns) / std * annualizer)
+    if not np.isfinite(sharpe):
+        return 0.0
+    return sharpe

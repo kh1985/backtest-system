@@ -31,6 +31,8 @@ class TestBacktestTask:
             initial_capital=10000,
             commission_pct=0.0,
             slippage_pct=0.0,
+            entry_on_next_open=True,
+            bars_per_year=35040,
             scoring_weights=ScoringWeights(),
         )
         assert task.data_range is None
@@ -47,6 +49,8 @@ class TestBacktestTask:
             initial_capital=10000,
             commission_pct=0.0,
             slippage_pct=0.0,
+            entry_on_next_open=True,
+            bars_per_year=35040,
             scoring_weights=ScoringWeights(),
             data_range=(100, 500),
         )

@@ -289,6 +289,8 @@ class TestRunWalkForwardAnalysis:
         assert "regime_0" in result.wfe
         assert "regime_0" in result.consistency_ratio
         assert "regime_0" in result.stitched_oos_pnl
+        assert "regime_0" in result.valid_fold_count
+        assert "regime_0" in result.trade_coverage_ratio
 
     def test_with_validation(self):
         """use_validation=True で Train/Val 分割が機能する"""
@@ -412,7 +414,7 @@ class TestComputeAggregateMetrics:
         assert result_set.consistency_ratio["uptrend"] == pytest.approx(2.0 / 3.0, abs=0.01)
 
     def test_stitched_oos_pnl(self):
-        """OOS PnL合計 = 5 + (-3) + 2 = 4"""
+        """OOSは複利で集計される"""
         result_set = WFAResultSet(config=WFAConfig())
 
         pnls = [5.0, -3.0, 2.0]
@@ -428,7 +430,49 @@ class TestComputeAggregateMetrics:
             ))
 
         _compute_aggregate_metrics(result_set, ["uptrend"])
-        assert result_set.stitched_oos_pnl["uptrend"] == pytest.approx(4.0, abs=0.01)
+        expected = ((1.05 * 0.97 * 1.02) - 1.0) * 100.0
+        assert result_set.stitched_oos_pnl["uptrend"] == pytest.approx(expected, abs=0.01)
+
+    def test_valid_fold_count_excludes_near_zero_is(self):
+        """ISがゼロ近傍のフォールドはWFE有効件数から除外される"""
+        result_set = WFAResultSet(config=WFAConfig())
+        is_vals = [10.0, 0.0, 5.0]
+        oos_vals = [5.0, 2.0, 2.5]
+
+        for i, (is_pnl, oos_pnl) in enumerate(zip(is_vals, oos_vals)):
+            is_entry = _make_entry(regime="uptrend", total_profit_pct=is_pnl)
+            oos_entry = _make_entry(regime="uptrend", total_profit_pct=oos_pnl)
+            result_set.folds.append(WFAFoldResult(
+                fold_index=i,
+                is_range=(0, 100),
+                oos_range=(100, 200),
+                selected_strategy={"uptrend": is_entry},
+                oos_results={"uptrend": oos_entry},
+            ))
+
+        _compute_aggregate_metrics(result_set, ["uptrend"])
+        assert result_set.valid_fold_count["uptrend"] == 2
+
+    def test_trade_coverage_ratio(self):
+        """trade_coverage_ratio はトレード発生フォールド割合"""
+        result_set = WFAResultSet(config=WFAConfig())
+        trades = [10, 0, 5]
+
+        for i, t in enumerate(trades):
+            is_entry = _make_entry(regime="uptrend", total_profit_pct=10.0)
+            oos_entry = _make_entry(
+                regime="uptrend", total_profit_pct=1.0 if t > 0 else -1.0, total_trades=t
+            )
+            result_set.folds.append(WFAFoldResult(
+                fold_index=i,
+                is_range=(0, 100),
+                oos_range=(100, 200),
+                selected_strategy={"uptrend": is_entry},
+                oos_results={"uptrend": oos_entry},
+            ))
+
+        _compute_aggregate_metrics(result_set, ["uptrend"])
+        assert result_set.trade_coverage_ratio["uptrend"] == pytest.approx(2.0 / 3.0, abs=0.01)
 
     def test_strategy_stability_all_same(self):
         """全フォールド同一戦略 → stability=1.0"""

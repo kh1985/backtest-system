@@ -16,6 +16,11 @@ import yaml
 import pandas as pd
 
 from data.base import Timeframe
+from config.settings import (
+    DEFAULT_ENTRY_ON_NEXT_OPEN,
+    DEFAULT_BARS_PER_YEAR,
+    TIMEFRAME_BARS_PER_YEAR,
+)
 from analysis.trend import TrendDetector, TrendRegime
 from optimizer.templates import BUILTIN_TEMPLATES, ParameterRange
 from optimizer.scoring import ScoringWeights, detect_overfitting_warnings
@@ -446,6 +451,35 @@ def _render_config_view():
             help=f"CPU: {max_workers}コア",
         )
 
+    exec_tf_bars = TIMEFRAME_BARS_PER_YEAR.get(exec_tf, DEFAULT_BARS_PER_YEAR)
+    extra_col1, extra_col2, extra_col3 = st.columns(3)
+    with extra_col1:
+        entry_on_next_open = st.checkbox(
+            "次足始値で約定",
+            value=DEFAULT_ENTRY_ON_NEXT_OPEN,
+            key="opt_entry_on_next_open",
+            help="ON: シグナル発生の次バー始値で約定（より現実的）",
+        )
+    with extra_col2:
+        auto_bars_per_year = st.checkbox(
+            "bars/year 自動推定",
+            value=True,
+            key="opt_auto_bars_per_year",
+            help="実行タイムフレームから年間バー数を推定",
+        )
+    with extra_col3:
+        bars_per_year = st.number_input(
+            "Bars per year",
+            value=int(exec_tf_bars if auto_bars_per_year else DEFAULT_BARS_PER_YEAR),
+            min_value=1,
+            step=1,
+            key="opt_bars_per_year",
+            disabled=auto_bars_per_year,
+            help="Sharpe年率化に使用する年間バー数",
+        )
+    if auto_bars_per_year:
+        bars_per_year = int(exec_tf_bars)
+
     st.divider()
 
     # --- 5. 探索方法 ---
@@ -699,6 +733,8 @@ def _render_config_view():
                 wfa_val_pct=int(wfa_val_pct),
                 wfa_top_n=int(wfa_top_n),
                 wfa_min_trades=int(wfa_min_trades),
+                entry_on_next_open=bool(entry_on_next_open),
+                bars_per_year=int(bars_per_year),
             )
 
     # --- バッチ実行 ---
@@ -730,6 +766,8 @@ def _render_config_view():
         wfa_val_pct=int(wfa_val_pct),
         wfa_top_n=int(wfa_top_n),
         wfa_min_trades=int(wfa_min_trades),
+        entry_on_next_open=bool(entry_on_next_open),
+        bars_per_year=int(bars_per_year),
     )
 
 
@@ -743,6 +781,8 @@ def _render_batch_section(
     oos_train_pct=60, oos_val_pct=20, oos_top_n=10, oos_min_trades=30,
     wfa_n_folds=5, wfa_min_is_pct=40, wfa_use_val=True,
     wfa_val_pct=20, wfa_top_n=10, wfa_min_trades=30,
+    entry_on_next_open=True,
+    bars_per_year=DEFAULT_BARS_PER_YEAR,
 ):
     """バッチ実行セクション（複数銘柄×データソースを一括実行）"""
     datasets = st.session_state.get("datasets", {})
@@ -846,6 +886,8 @@ def _render_batch_section(
                 wfa_val_pct=wfa_val_pct,
                 wfa_top_n=wfa_top_n,
                 wfa_min_trades=wfa_min_trades,
+                entry_on_next_open=entry_on_next_open,
+                bars_per_year=bars_per_year,
             )
 
 
@@ -859,6 +901,7 @@ def _run_batch_optimization(
     oos_train_pct=60, oos_val_pct=20, oos_top_n=10, oos_min_trades=30,
     wfa_n_folds=5, wfa_min_is_pct=40, wfa_use_val=True,
     wfa_val_pct=20, wfa_top_n=10, wfa_min_trades=30,
+    entry_on_next_open=True, bars_per_year=DEFAULT_BARS_PER_YEAR,
 ):
     """バッチ最適化を順次実行（検証モード対応）"""
     all_results = []
@@ -915,6 +958,8 @@ def _run_batch_optimization(
             data_source=target["source"],
             data_period_start=target.get("period_start", ""),
             data_period_end=target.get("period_end", ""),
+            entry_on_next_open=entry_on_next_open,
+            bars_per_year=bars_per_year,
         )
 
         if validation_mode == "oos_3split":
@@ -1058,6 +1103,7 @@ def _execute_single_optimization(
     ma_fast, ma_slow, adx_period, adx_trend_th, adx_range_th,
     n_workers=1, progress_callback=None,
     data_source="original", data_period_start="", data_period_end="",
+    entry_on_next_open=True, bars_per_year=DEFAULT_BARS_PER_YEAR,
 ):
     """1銘柄分の最適化コア処理（UI非依存）"""
     exec_ohlcv = tf_dict[exec_tf]
@@ -1116,6 +1162,8 @@ def _execute_single_optimization(
         initial_capital=initial_capital,
         commission_pct=commission,
         slippage_pct=slippage,
+        entry_on_next_open=entry_on_next_open,
+        bars_per_year=bars_per_year,
         scoring_weights=scoring_weights,
     )
 
@@ -1145,6 +1193,7 @@ def _execute_validated_optimization(
     n_workers=1, progress_callback=None,
     data_source="original", data_period_start="", data_period_end="",
     oos_train_pct=60, oos_val_pct=20, oos_top_n=10, oos_min_trades=30,
+    entry_on_next_open=True, bars_per_year=DEFAULT_BARS_PER_YEAR,
 ):
     """OOS検証付き最適化（Train/Val/Test 3分割）"""
     exec_ohlcv = tf_dict[exec_tf]
@@ -1203,6 +1252,8 @@ def _execute_validated_optimization(
         initial_capital=initial_capital,
         commission_pct=commission,
         slippage_pct=slippage,
+        entry_on_next_open=entry_on_next_open,
+        bars_per_year=bars_per_year,
         scoring_weights=scoring_weights,
     )
 
@@ -1249,6 +1300,7 @@ def _execute_wfa_optimization(
     data_source="original", data_period_start="", data_period_end="",
     wfa_n_folds=5, wfa_min_is_pct=40, wfa_use_val=True,
     wfa_val_pct=20, wfa_top_n=10, wfa_min_trades=30,
+    entry_on_next_open=True, bars_per_year=DEFAULT_BARS_PER_YEAR,
 ):
     """Walk-Forward Analysis 付き最適化"""
     from optimizer.walk_forward import WFAConfig, run_walk_forward_analysis
@@ -1309,6 +1361,8 @@ def _execute_wfa_optimization(
         initial_capital=initial_capital,
         commission_pct=commission,
         slippage_pct=slippage,
+        entry_on_next_open=entry_on_next_open,
+        bars_per_year=bars_per_year,
         scoring_weights=scoring_weights,
     )
 
@@ -1535,6 +1589,8 @@ def _run_optimization(
     wfa_val_pct=20,
     wfa_top_n=10,
     wfa_min_trades=30,
+    entry_on_next_open=True,
+    bars_per_year=DEFAULT_BARS_PER_YEAR,
 ):
     """単一銘柄の最適化実行（UIラッパー）"""
     progress_bar = st.progress(0, text="Starting optimization...")
@@ -1579,6 +1635,8 @@ def _run_optimization(
             oos_val_pct=oos_val_pct,
             oos_top_n=oos_top_n,
             oos_min_trades=oos_min_trades,
+            entry_on_next_open=entry_on_next_open,
+            bars_per_year=bars_per_year,
         )
 
         result_set = validated_result.train_results
@@ -1616,6 +1674,8 @@ def _run_optimization(
             wfa_val_pct=wfa_val_pct,
             wfa_top_n=wfa_top_n,
             wfa_min_trades=wfa_min_trades,
+            entry_on_next_open=entry_on_next_open,
+            bars_per_year=bars_per_year,
         )
 
         # final_train_results をメインの結果として使う
@@ -1652,6 +1712,8 @@ def _run_optimization(
             data_source=ds_info.get("source", "original"),
             data_period_start=ds_info.get("period_start", ""),
             data_period_end=ds_info.get("period_end", ""),
+            entry_on_next_open=entry_on_next_open,
+            bars_per_year=bars_per_year,
         )
 
         # 警告を付与（OOSなしでもPF/Sharpe/Trade数の警告は出す）

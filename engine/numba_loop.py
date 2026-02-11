@@ -64,11 +64,13 @@ def _compute_tp_sl(
 
 @njit(cache=True)
 def _backtest_loop(
+    open_: np.ndarray,
     high: np.ndarray,
     low: np.ndarray,
     close: np.ndarray,
     entry_signals: np.ndarray,
     regime_mask: np.ndarray,
+    entry_on_next_open: bool,
     is_long: bool,
     tp_pct: float,
     sl_pct: float,
@@ -94,9 +96,10 @@ def _backtest_loop(
     Numba JIT コンパイルされたバックテストループ。
 
     Args:
-        high, low, close: OHLC numpy配列
+        open_, high, low, close: OHLC numpy配列
         entry_signals: エントリーシグナル（bool配列、事前にベクトル化済み）
         regime_mask: レジームフィルタ（bool配列、全True = フィルタなし）
+        entry_on_next_open: True の場合、シグナル次バー始値で約定
         is_long: True=ロング、False=ショート
         tp_pct, sl_pct: TP/SLパーセンテージ（固定%モード）
         trailing_pct: トレーリングストップ%（0.0=無効、固定%モード）
@@ -250,7 +253,15 @@ def _backtest_loop(
 
         # === エントリー判定 ===
         if not in_position and entry_signals[i] and regime_mask[i]:
-            entry_price = close[i]
+            if entry_on_next_open:
+                # 次バー始値での約定: 末尾バーの新規エントリーは不可
+                if i + 1 >= n:
+                    continue
+                entry_price = open_[i + 1]
+                entry_idx = i + 1
+            else:
+                entry_price = close[i]
+                entry_idx = i
 
             if slippage_pct > 0.0:
                 if is_long:
@@ -258,10 +269,9 @@ def _backtest_loop(
                 else:
                     entry_price *= (1.0 - slippage_pct / 100.0)
 
-            entry_idx = i
-
             # ATR値取得（ATRベースexit/トレーリング時）
-            atr_val = atr[i] if (use_atr_exit or use_atr_trailing) and len(atr) > i else 0.0
+            atr_idx = entry_idx
+            atr_val = atr[atr_idx] if (use_atr_exit or use_atr_trailing) and len(atr) > atr_idx else 0.0
 
             tp_price, sl_price = _compute_tp_sl(
                 entry_price, is_long,
@@ -273,24 +283,26 @@ def _backtest_loop(
             trailing_dist = atr_val * atr_trailing_mult if use_atr_trailing else 0.0
 
             # BB exit モード: 初期TPをBB帯に設定（次バーから動的更新される）
-            if use_bb_exit and len(bb_upper) > i:
+            bb_idx = entry_idx
+            if use_bb_exit and len(bb_upper) > bb_idx:
                 if is_long:
-                    bb_val = bb_upper[i]
+                    bb_val = bb_upper[bb_idx]
                     if bb_val > 0.0 and bb_val < 1e17:
                         tp_price = bb_val
                 else:
-                    bb_val = bb_lower[i]
+                    bb_val = bb_lower[bb_idx]
                     if bb_val > 0.0 and bb_val < 1e17:
                         tp_price = bb_val
 
             # VWAP exit モード: 初期TPをVWAPバンドに設定（次バーから動的更新される）
-            if use_vwap_exit and len(vwap_upper) > i:
+            vwap_idx = entry_idx
+            if use_vwap_exit and len(vwap_upper) > vwap_idx:
                 if is_long:
-                    vwap_val = vwap_upper[i]
+                    vwap_val = vwap_upper[vwap_idx]
                     if vwap_val > 0.0 and vwap_val < 1e17:
                         tp_price = vwap_val
                 else:
-                    vwap_val = vwap_lower[i]
+                    vwap_val = vwap_lower[vwap_idx]
                     if vwap_val > 0.0 and vwap_val < 1e17:
                         tp_price = vwap_val
 

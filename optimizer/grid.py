@@ -53,6 +53,8 @@ class _BacktestTask:
     initial_capital: float
     commission_pct: float
     slippage_pct: float
+    entry_on_next_open: bool
+    bars_per_year: int
     scoring_weights: ScoringWeights
     data_range: Optional[Tuple[int, int]] = None
 
@@ -252,6 +254,8 @@ def _run_single_task(task: _BacktestTask) -> Optional[OptimizationEntry]:
             initial_capital=task.initial_capital,
             commission_pct=task.commission_pct,
             slippage_pct=task.slippage_pct,
+            entry_on_next_open=task.entry_on_next_open,
+            bars_per_year=task.bars_per_year,
             scoring_weights=task.scoring_weights,
         )
 
@@ -373,12 +377,16 @@ class GridSearchOptimizer:
         initial_capital: float = 10000.0,
         commission_pct: float = 0.04,
         slippage_pct: float = 0.0,
+        entry_on_next_open: bool = True,
+        bars_per_year: int = 365 * 24 * 4,
         scoring_weights: ScoringWeights = None,
         top_n_results: int = 20,
     ):
         self.initial_capital = initial_capital
         self.commission_pct = commission_pct
         self.slippage_pct = slippage_pct
+        self.entry_on_next_open = entry_on_next_open
+        self.bars_per_year = bars_per_year
         self.scoring_weights = scoring_weights or ScoringWeights()
         self.top_n_results = top_n_results
         self._indicator_cache = IndicatorCache()
@@ -555,6 +563,8 @@ class GridSearchOptimizer:
                     initial_capital=self.initial_capital,
                     commission_pct=self.commission_pct,
                     slippage_pct=self.slippage_pct,
+                    entry_on_next_open=self.entry_on_next_open,
+                    bars_per_year=self.bars_per_year,
                     scoring_weights=self.scoring_weights,
                     data_range=data_range,
                 ))
@@ -689,6 +699,7 @@ class GridSearchOptimizer:
                 regime_mask = np.ones(len(work_df), dtype=np.bool_)
 
         # numpy 配列抽出（全データ）
+        open_ = work_df["open"].values.astype(np.float64)
         high = work_df["high"].values.astype(np.float64)
         low = work_df["low"].values.astype(np.float64)
         close = work_df["close"].values.astype(np.float64)
@@ -779,6 +790,7 @@ class GridSearchOptimizer:
         # data_range が指定されている場合、バックテスト範囲をスライス
         if data_range is not None:
             start, end = data_range
+            open_ = open_[start:end]
             high = high[start:end]
             low = low[start:end]
             close = close[start:end]
@@ -795,8 +807,9 @@ class GridSearchOptimizer:
 
         # Numba JIT ループ実行
         profit_pcts, durations, equity_curve = _backtest_loop(
-            high, low, close,
+            open_, high, low, close,
             entry_signals, regime_mask,
+            self.entry_on_next_open,
             is_long, tp_pct, sl_pct,
             trailing_pct, timeout_bars,
             self.commission_pct, self.slippage_pct,
@@ -809,7 +822,7 @@ class GridSearchOptimizer:
 
         # メトリクス算出（numpy 配列版）
         metrics = calculate_metrics_from_arrays(
-            profit_pcts, durations, equity_curve,
+            profit_pcts, durations, equity_curve, bars_per_year=self.bars_per_year,
         )
 
         # 複合スコア

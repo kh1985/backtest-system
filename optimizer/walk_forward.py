@@ -94,6 +94,8 @@ class WFAResultSet:
     consistency_ratio: Dict[str, float] = field(default_factory=dict)
     stitched_oos_pnl: Dict[str, float] = field(default_factory=dict)
     strategy_stability: Dict[str, float] = field(default_factory=dict)
+    valid_fold_count: Dict[str, int] = field(default_factory=dict)
+    trade_coverage_ratio: Dict[str, float] = field(default_factory=dict)
 
     # 参照情報
     symbol: str = ""
@@ -376,6 +378,8 @@ def _compute_aggregate_metrics(
     for regime in target_regimes:
         is_pnls = []
         oos_pnls = []
+        fold_wfe_ratios = []
+        fold_with_trades = 0
         strategy_names = []
         total_folds = len(result_set.folds)
 
@@ -391,14 +395,20 @@ def _compute_aggregate_metrics(
 
             if oos_entry:
                 oos_pnls.append(oos_entry.metrics.total_profit_pct)
+                if oos_entry.metrics.total_trades > 0:
+                    fold_with_trades += 1
+                if is_entry and abs(is_entry.metrics.total_profit_pct) > 1e-10:
+                    fold_wfe_ratios.append(
+                        oos_entry.metrics.total_profit_pct / is_entry.metrics.total_profit_pct
+                    )
 
-        # WFE: mean(OOS) / mean(IS)
-        if is_pnls and oos_pnls:
-            mean_is = float(np.mean(is_pnls))
-            mean_oos = float(np.mean(oos_pnls))
-            result_set.wfe[regime] = (
-                mean_oos / mean_is if abs(mean_is) > 1e-10 else 0.0
-            )
+        # WFE: foldごとの OOS/IS 比率の中央値（IS≈0 を除外）
+        valid_count = len(fold_wfe_ratios)
+        result_set.valid_fold_count[regime] = valid_count
+        if valid_count > 0:
+            result_set.wfe[regime] = float(np.median(np.array(fold_wfe_ratios)))
+        else:
+            result_set.wfe[regime] = 0.0
 
         # Consistency Ratio
         if total_folds > 0:
@@ -406,6 +416,9 @@ def _compute_aggregate_metrics(
             # CR分母: トレード無しフォールドも含めた全フォールド数を使用
             result_set.consistency_ratio[regime] = (
                 positive_count / total_folds
+            )
+            result_set.trade_coverage_ratio[regime] = (
+                fold_with_trades / total_folds
             )
 
         if oos_pnls:
