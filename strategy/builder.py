@@ -17,12 +17,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from indicators.registry import create_indicator
 from strategy.base import ExitRule, Signal, Side, Strategy
 from strategy.conditions import (
+    BBSqueezeCondition,
     CandlePatternCondition,
     ColumnCompareCondition,
     CompoundCondition,
     Condition,
     CrossoverCondition,
+    EMAStateCondition,
     ThresholdCondition,
+    TimeBasedCondition,
+    TrapGridCondition,
+    VolumeCondition,
 )
 
 
@@ -115,6 +120,46 @@ class ConfigStrategy(Strategy):
                 )
             elif ctype == "candle":
                 conditions.append(CandlePatternCondition(c["pattern"]))
+            elif ctype == "bb_squeeze":
+                conditions.append(
+                    BBSqueezeCondition(
+                        squeeze_threshold=c["threshold"],
+                        bb_period=c.get("bb_period", 20)
+                    )
+                )
+            elif ctype == "trap_grid":
+                conditions.append(
+                    TrapGridCondition(
+                        trap_interval_pct=c["trap_interval_pct"],
+                        range_source=c.get("range_source", "bb"),
+                        range_low=c.get("range_low"),
+                        range_high=c.get("range_high"),
+                        side=self.side.value,
+                        bb_period=c.get("bb_period", 20),
+                    )
+                )
+            elif ctype == "volume":
+                conditions.append(
+                    VolumeCondition(
+                        volume_mult=c["volume_mult"],
+                        volume_period=c.get("volume_period", 20)
+                    )
+                )
+            elif ctype == "ema_state":
+                conditions.append(
+                    EMAStateCondition(
+                        fast_period=c["fast_period"],
+                        slow_period=c["slow_period"],
+                        direction=c["direction"]
+                    )
+                )
+            elif ctype == "time_based":
+                conditions.append(
+                    TimeBasedCondition(
+                        start_hour=c["start_hour"],
+                        end_hour=c["end_hour"]
+                    )
+                )
 
         if len(conditions) == 1:
             return conditions[0]

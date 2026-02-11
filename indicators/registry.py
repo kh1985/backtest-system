@@ -10,7 +10,7 @@ from .base import Indicator
 from .trend import SMA, EMA, ParabolicSAR
 from .momentum import RSI, MACD, Stochastic
 from .volatility import BollingerBands, ATR
-from .volume import VWAP, RelativeVolume, VolumeAnalysis, VolumeProfile
+from .volume import VWAP, RelativeVolume, VolumeAnalysis, VolumeProfile, VolumeSMA
 from .adx import ADX
 from .structure import SwingStructure, TrendStructure
 
@@ -28,6 +28,7 @@ INDICATOR_REGISTRY: Dict[str, Type[Indicator]] = {
     "rvol": RelativeVolume,
     "volume_analysis": VolumeAnalysis,
     "volume_profile": VolumeProfile,
+    "volume_sma": VolumeSMA,
     "adx": ADX,
     "swing": SwingStructure,
     "structure": TrendStructure,

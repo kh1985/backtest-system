@@ -1,0 +1,30 @@
+# ADX + BB Long - Uptrend用
+# テンプレート: adx_bb_long
+# レジーム: Uptrend (Dual-TF EMA)
+# Exit: tp=1.0%, sl=1.0%
+
+name: "adx_bb_long"
+side: long
+
+indicators:
+  - type: adx
+    period: 14
+  - type: bollinger
+    period: 20
+    std_dev: 2.0
+
+entry_conditions:
+  - type: threshold
+    column: adx_14
+    operator: ">="
+    value: 25
+  - type: column_compare
+    column_a: close
+    operator: "<"
+    column_b: bb_lower_20
+
+entry_logic: and
+
+exit:
+  take_profit_pct: 1.0
+  stop_loss_pct: 1.0

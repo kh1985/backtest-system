@@ -1,0 +1,27 @@
+# strategy/examples/adx_bb_long_atr_uptrend_UNIUSDT.yaml
+template: adx_bb_long
+
+entry:
+  - indicator: adx
+    params:
+      period: 14
+    threshold: 20
+    comparison: ">"
+  - indicator: bollinger_bands
+    params:
+      period: 20
+      num_std_dev: 2.0
+    condition: price_below_lower
+
+exit:
+  take_profit_atr_mult: 1.5  # tp15 (2/5フォールド、Fold 3/4)
+  stop_loss_atr_mult: 2.0
+
+# 期待メトリクス
+# Stitched OOS PnL: +28.04%
+# CR: 80% (4/5 profitable folds)
+# WFE: 0.11
+# Avg OOS Win Rate: 55.2%
+# Avg OOS PF: 1.32
+# Avg OOS MaxDD: 5.04%
+# Strategy Stability: 1.00 (最高)

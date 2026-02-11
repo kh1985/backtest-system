@@ -193,14 +193,52 @@ ATR_COMPACT_PROFILES: List[ExitProfile] = [
     if p["atr_sl_mult"] == 2.0 and p["atr_tp_mult"] in (1.5, 2.0, 3.0)
 ]
 
+# tp20固定（5年WFA検証用）
+ATR_TP20_PROFILES: List[ExitProfile] = [
+    p for p in ATR_PROFILES
+    if p["atr_sl_mult"] == 2.0 and p["atr_tp_mult"] == 2.0
+]
+
+# tp30固定（5年WFA検証用）
+ATR_TP30_PROFILES: List[ExitProfile] = [
+    p for p in ATR_PROFILES
+    if p["atr_sl_mult"] == 2.0 and p["atr_tp_mult"] == 3.0
+]
+
+# tp15_sl15固定（Step 17 Priority A検証で最優秀）
+ATR_TP15_SL15_PROFILES: List[ExitProfile] = [
+    p for p in ATR_PROFILES
+    if p["atr_sl_mult"] == 1.5 and p["atr_tp_mult"] == 1.5
+]
+
+# Priority A（最優先検証）: 26種
+# - ATR固定TP/SL（8種）: atr_tp15_sl20を除く
+# - ATRトレーリング適切範囲（18種）: Timeout 6～18bars
+PRIORITY_A_PROFILES: List[ExitProfile] = []
+
+# ATR固定TP/SL（8種）
+for p in ATR_PROFILES:
+    if p["name"] in [
+        "atr_tp15_sl10", "atr_tp20_sl10", "atr_tp30_sl10",
+        "atr_tp15_sl15", "atr_tp20_sl15", "atr_tp30_sl15",
+        "atr_tp20_sl20", "atr_tp30_sl20"
+    ]:
+        PRIORITY_A_PROFILES.append(p)
+
+# ATRトレーリング適切範囲（18種）: Timeout 6～18bars
+for p in ATR_TRAILING_PROFILES:
+    if 'timeout_bars' in p and 6 <= p['timeout_bars'] <= 18:
+        PRIORITY_A_PROFILES.append(p)
+
 
 def get_profiles(mode: str = "all") -> List[ExitProfile]:
     """
     指定モードの exit profiles を取得
 
     Args:
-        mode: "all", "atr", "atr_compact", "atr_trailing", "atr_hybrid",
-              "vwap", "bb", "vwap_trend", "vwap_range", "vwap_entry"
+        mode: "all", "atr", "atr_compact", "atr_tp20", "atr_tp30", "atr_tp15_sl15",
+              "atr_trailing", "atr_hybrid", "vwap", "bb",
+              "vwap_trend", "vwap_range", "vwap_entry", "priority_a"
 
     Returns:
         ExitProfile のリスト
@@ -208,6 +246,9 @@ def get_profiles(mode: str = "all") -> List[ExitProfile]:
     modes = {
         "atr": ATR_PROFILES,
         "atr_compact": ATR_COMPACT_PROFILES,
+        "atr_tp20": ATR_TP20_PROFILES,
+        "atr_tp30": ATR_TP30_PROFILES,
+        "atr_tp15_sl15": ATR_TP15_SL15_PROFILES,  # Step 17最優秀
         "atr_trailing": ATR_TRAILING_PROFILES,
         "atr_hybrid": ATR_HYBRID_PROFILES,
         "vwap": VWAP_PROFILES,
@@ -215,6 +256,7 @@ def get_profiles(mode: str = "all") -> List[ExitProfile]:
         "vwap_trend": VWAP_TREND_PROFILES,
         "vwap_range": VWAP_RANGE_PROFILES,
         "vwap_entry": VWAP_TREND_PROFILES + VWAP_RANGE_PROFILES,  # VWAPエントリー専用全て
+        "priority_a": PRIORITY_A_PROFILES,  # 最優先検証26種
         "all": ALL_PROFILES,
     }
     return modes.get(mode, ALL_PROFILES)

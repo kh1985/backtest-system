@@ -12,6 +12,7 @@ import pandas as pd
 
 class Timeframe(Enum):
     M1 = "1m"
+    M3 = "3m"
     M5 = "5m"
     M15 = "15m"
     H1 = "1h"
@@ -27,7 +28,7 @@ class Timeframe(Enum):
 
     def to_minutes(self) -> int:
         mapping = {
-            "1m": 1, "5m": 5, "15m": 15,
+            "1m": 1, "3m": 3, "5m": 5, "15m": 15,
             "1h": 60, "4h": 240, "1d": 1440,
         }
         return mapping[self.value]

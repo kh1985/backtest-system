@@ -13,6 +13,8 @@ Modal上でバッチ最適化を並列実行するスクリプト
 
     # exit profiles指定
     modal run scripts/modal_optimize.py --exit-profiles fixed
+
+# 2026-02-11: テンプレートフィルターロジック修正（部分一致→完全一致）
 """
 
 import json
@@ -163,7 +165,8 @@ def optimize_one(
     all_configs = []
     for tname, template in BUILTIN_TEMPLATES.items():
         if filter_patterns:
-            if not any(p in tname.lower() for p in filter_patterns):
+            # 完全一致判定（修正版: 2026-02-11）
+            if tname.lower() not in filter_patterns:
                 continue
         configs = template.generate_configs(exit_profiles=exit_profiles)
         all_configs.extend(configs)

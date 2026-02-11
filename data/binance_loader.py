@@ -201,6 +201,7 @@ class BinanceCSVLoader(DataSource):
             tf_str = parts[1]
             tf_mapping = {
                 "1m": Timeframe.M1,
+                "3m": Timeframe.M3,
                 "5m": Timeframe.M5,
                 "15m": Timeframe.M15,
                 "1h": Timeframe.H1,

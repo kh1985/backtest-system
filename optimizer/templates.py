@@ -2465,3 +2465,771 @@ _register(StrategyTemplate(
     param_ranges=[],
 ))
 
+# 70. EMA(5)<EMA(13) state + BB中間ショート（state条件版）
+# ema_fast_cross_bb_short（crossover）のstate条件バリエーション
+_register(StrategyTemplate(
+    name="ema_state_bb_short",
+    description="EMA(5)<EMA(13) state + close > BB中間でショート（state条件）",
+    config_template={
+        "name": "ema_state_bb_short",
+        "side": "short",
+        "indicators": [
+            {"type": "ema", "period": 5},
+            {"type": "ema", "period": 13},
+            {"type": "bollinger", "period": 20, "std_dev": 2.0},
+        ],
+        "entry_conditions": [
+            {"type": "column_compare", "column_a": "ema_5", "operator": "<", "column_b": "ema_13"},
+            {"type": "column_compare", "column_a": "close", "operator": ">", "column_b": "bb_middle_20"},
+        ],
+        "entry_logic": "and",
+        "exit": {"take_profit_pct": 1.5, "stop_loss_pct": 1.0},
+    },
+    param_ranges=[],
+))
+
+# =====================================================================
+# BB Squeeze Breakout（Ralph-loop Iteration 2）
+# Squeezeからのブレイク + ADX + Volume + EMA方向確認で高精度エントリー
+# =====================================================================
+
+# 71. BB Squeeze Breakout Long（上方ブレイク）
+_register(StrategyTemplate(
+    name="bb_squeeze_breakout_long",
+    description="BB Squeeze後の上方ブレイク + ADX + Volume + EMA確認でロング",
+    config_template={
+        "name": "bb_squeeze_breakout_long",
+        "side": "long",
+        "indicators": [
+            {"type": "bollinger", "period": 20, "std_dev": 2.0},
+            {"type": "adx", "period": 14},
+            {"type": "ema", "period": 5},
+            {"type": "ema", "period": 13},
+            {"type": "volume_sma", "period": 20},
+        ],
+        "entry_conditions": [
+            {
+                "type": "bb_squeeze",
+                "threshold": "{squeeze_threshold}",
+                "bb_period": 20,
+            },
+            {
+                "type": "column_compare",
+                "column_a": "close",
+                "operator": ">",
+                "column_b": "bb_upper_20",
+            },
+            {
+                "type": "threshold",
+                "column": "adx_14",
+                "operator": ">=",
+                "value": "{adx_threshold}",
+            },
+            {
+                "type": "volume",
+                "volume_mult": "{volume_mult}",
+                "volume_period": 20,
+            },
+            {
+                "type": "ema_state",
+                "fast_period": 5,
+                "slow_period": 13,
+                "direction": "above",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 2.0,
+            "timeout_bars": 100,
+        },
+    },
+    param_ranges=[
+        ParameterRange("adx_threshold", 20, 30, 5, "int"),
+        ParameterRange("volume_mult", 1.5, 2.5, 0.5, "float"),
+        ParameterRange("squeeze_threshold", 0.05, 0.15, 0.05, "float"),
+    ],
+))
+
+# 72. BB Squeeze Breakout Short（下方ブレイク）
+_register(StrategyTemplate(
+    name="bb_squeeze_breakout_short",
+    description="BB Squeeze後の下方ブレイク + ADX + Volume + EMA確認でショート",
+    config_template={
+        "name": "bb_squeeze_breakout_short",
+        "side": "short",
+        "indicators": [
+            {"type": "bollinger", "period": 20, "std_dev": 2.0},
+            {"type": "adx", "period": 14},
+            {"type": "ema", "period": 5},
+            {"type": "ema", "period": 13},
+            {"type": "volume_sma", "period": 20},
+        ],
+        "entry_conditions": [
+            {
+                "type": "bb_squeeze",
+                "threshold": "{squeeze_threshold}",
+                "bb_period": 20,
+            },
+            {
+                "type": "column_compare",
+                "column_a": "close",
+                "operator": "<",
+                "column_b": "bb_lower_20",
+            },
+            {
+                "type": "threshold",
+                "column": "adx_14",
+                "operator": ">=",
+                "value": "{adx_threshold}",
+            },
+            {
+                "type": "volume",
+                "volume_mult": "{volume_mult}",
+                "volume_period": 20,
+            },
+            {
+                "type": "ema_state",
+                "fast_period": 5,
+                "slow_period": 13,
+                "direction": "below",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 1.5,
+            "stop_loss_pct": 2.0,
+            "timeout_bars": 100,
+        },
+    },
+    param_ranges=[
+        ParameterRange("adx_threshold", 20, 30, 5, "int"),
+        ParameterRange("volume_mult", 1.5, 2.5, 0.5, "float"),
+        ParameterRange("squeeze_threshold", 0.05, 0.15, 0.05, "float"),
+    ],
+))
+
+
+
+# =====================================================================
+# トラリピテンプレート（Step 19: レンジ相場対応）
+# =====================================================================
+
+# 73. Trap Repeat Long（トラリピ・ロング）
+_register(StrategyTemplate(
+    name="trap_repeat_long",
+    description="トラリピ（ロング）: BB範囲内にトラップ配置",
+    config_template={
+        "name": "trap_repeat_long",
+        "side": "long",
+        "indicators": [
+            {"type": "bollinger", "period": 20, "std_dev": 2.0},
+        ],
+        "entry_conditions": [
+            {
+                "type": "trap_grid",
+                "trap_interval_pct": "{trap_interval}",
+                "range_source": "bb",
+            }
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": "{profit_width}",
+            "stop_loss_pct": 0.0,
+            "timeout_bars": 100,
+        },
+    },
+    param_ranges=[
+        ParameterRange("trap_interval", 0.5, 2.0, 0.5, "float"),
+        ParameterRange("profit_width", 0.3, 1.0, 0.1, "float"),
+    ],
+))
+
+# 74. Trap Repeat Short（トラリピ・ショート）
+_register(StrategyTemplate(
+    name="trap_repeat_short",
+    description="トラリピ（ショート）: BB範囲内にトラップ配置",
+    config_template={
+        "name": "trap_repeat_short",
+        "side": "short",
+        "indicators": [
+            {"type": "bollinger", "period": 20, "std_dev": 2.0},
+        ],
+        "entry_conditions": [
+            {
+                "type": "trap_grid",
+                "trap_interval_pct": "{trap_interval}",
+                "range_source": "bb",
+            }
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": "{profit_width}",
+            "stop_loss_pct": 0.0,
+            "timeout_bars": 100,
+        },
+    },
+    param_ranges=[
+        ParameterRange("trap_interval", 0.5, 2.0, 0.5, "float"),
+        ParameterRange("profit_width", 0.3, 1.0, 0.1, "float"),
+    ],
+))
+
+# 75. Time-based ADX+BB Short（ロンドン時間 + 強トレンド + BB上限タッチショート）
+_register(StrategyTemplate(
+    name="time_adx_bb_short",
+    description="ロンドン時間 + ADX強トレンド + BB上限 + RSI買われすぎでショート",
+    config_template={
+        "name": "time_adx_bb_short",
+        "side": "short",
+        "indicators": [
+            {"type": "adx", "period": 14},
+            {"type": "bollinger", "period": 20, "std_dev": 2.0},
+            {"type": "rsi", "period": 14},
+        ],
+        "entry_conditions": [
+            {
+                "type": "time_based",
+                "start_hour": 14,
+                "end_hour": 0,
+            },
+            {
+                "type": "threshold",
+                "column": "adx_14",
+                "operator": ">=",
+                "value": "{adx_threshold}",
+            },
+            {
+                "type": "column_compare",
+                "column_a": "di_neg_14",
+                "operator": ">",
+                "column_b": "di_pos_14",
+            },
+            {
+                "type": "column_compare",
+                "column_a": "close",
+                "operator": ">",
+                "column_b": "bb_upper_20",
+            },
+            {
+                "type": "threshold",
+                "column": "rsi_14",
+                "operator": ">",
+                "value": "{rsi_threshold}",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 1.5,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[
+        ParameterRange("adx_threshold", 20, 30, 5, "int"),
+        ParameterRange("rsi_threshold", 65, 75, 5, "int"),
+    ],
+))
+
+# 76. Asian Contrarian Short（アジア時間逆張りショート）
+_register(StrategyTemplate(
+    name="asian_contrarian_short",
+    description="アジア時間 + RSI買われすぎ + BB上限でショート（GogoJungle実績84% win rate）",
+    config_template={
+        "name": "asian_contrarian_short",
+        "side": "short",
+        "indicators": [
+            {"type": "bollinger", "period": 20, "std_dev": "{bb_std}"},
+            {"type": "rsi", "period": 14},
+        ],
+        "entry_conditions": [
+            {
+                "type": "time_based",
+                "start_hour": 1,
+                "end_hour": 15,
+            },
+            {
+                "type": "threshold",
+                "column": "rsi_14",
+                "operator": ">",
+                "value": "{rsi_threshold}",
+            },
+            {
+                "type": "column_compare",
+                "column_a": "close",
+                "operator": ">",
+                "column_b": "bb_upper_20",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 1.5,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[
+        ParameterRange("rsi_threshold", 55, 70, 5, "int"),
+        ParameterRange("bb_std", 2.0, 2.5, 0.5, "float"),
+    ],
+))
+
+# 77. Time + BB Short - Asian（アジア時間 + BB上限ショート）
+_register(StrategyTemplate(
+    name="time_bb_short_asian",
+    description="アジア時間(1:00-15:59) + BB上限タッチでショート（2条件AND）",
+    config_template={
+        "name": "time_bb_short_asian",
+        "side": "short",
+        "indicators": [
+            {"type": "bollinger", "period": 20, "std_dev": "{bb_std}"},
+        ],
+        "entry_conditions": [
+            {
+                "type": "time_based",
+                "start_hour": 1,
+                "end_hour": 15,
+            },
+            {
+                "type": "column_compare",
+                "column_a": "close",
+                "operator": ">",
+                "column_b": "bb_upper_20",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 1.5,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[
+        ParameterRange("bb_std", 2.0, 2.5, 0.5, "float"),
+    ],
+))
+
+# 78. Time + BB Short - Tokyo（東京時間 + BB上限ショート）
+_register(StrategyTemplate(
+    name="time_bb_short_tokyo",
+    description="東京時間(9:00-16:59) + BB上限タッチでショート（2条件AND）",
+    config_template={
+        "name": "time_bb_short_tokyo",
+        "side": "short",
+        "indicators": [
+            {"type": "bollinger", "period": 20, "std_dev": "{bb_std}"},
+        ],
+        "entry_conditions": [
+            {
+                "type": "time_based",
+                "start_hour": 9,
+                "end_hour": 16,
+            },
+            {
+                "type": "column_compare",
+                "column_a": "close",
+                "operator": ">",
+                "column_b": "bb_upper_20",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 1.5,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[
+        ParameterRange("bb_std", 2.0, 2.5, 0.5, "float"),
+    ],
+))
+
+# 79. Time + BB Short - London（ロンドン時間 + BB上限ショート）
+_register(StrategyTemplate(
+    name="time_bb_short_london",
+    description="ロンドン時間(14:00-0:59) + BB上限タッチでショート（2条件AND）",
+    config_template={
+        "name": "time_bb_short_london",
+        "side": "short",
+        "indicators": [
+            {"type": "bollinger", "period": 20, "std_dev": "{bb_std}"},
+        ],
+        "entry_conditions": [
+            {
+                "type": "time_based",
+                "start_hour": 14,
+                "end_hour": 0,
+            },
+            {
+                "type": "column_compare",
+                "column_a": "close",
+                "operator": ">",
+                "column_b": "bb_upper_20",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 1.5,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[
+        ParameterRange("bb_std", 2.0, 2.5, 0.5, "float"),
+    ],
+))
+
+# 80. Time + Volume Short - Asian（アジア時間 + 出来高急増ショート）
+_register(StrategyTemplate(
+    name="time_volume_short_asian",
+    description="アジア時間(1:00-15:59) + 出来高急増でショート（2条件AND）",
+    config_template={
+        "name": "time_volume_short_asian",
+        "side": "short",
+        "indicators": [],
+        "entry_conditions": [
+            {
+                "type": "time_based",
+                "start_hour": 1,
+                "end_hour": 15,
+            },
+            {
+                "type": "volume",
+                "volume_mult": "{volume_mult}",
+                "volume_period": 20,
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 1.5,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[
+        ParameterRange("volume_mult", 1.5, 2.5, 0.5, "float"),
+    ],
+))
+
+# 81. Time + Volume Short - Tokyo（東京時間 + 出来高急増ショート）
+_register(StrategyTemplate(
+    name="time_volume_short_tokyo",
+    description="東京時間(9:00-16:59) + 出来高急増でショート（2条件AND）",
+    config_template={
+        "name": "time_volume_short_tokyo",
+        "side": "short",
+        "indicators": [],
+        "entry_conditions": [
+            {
+                "type": "time_based",
+                "start_hour": 9,
+                "end_hour": 16,
+            },
+            {
+                "type": "volume",
+                "volume_mult": "{volume_mult}",
+                "volume_period": 20,
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 1.5,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[
+        ParameterRange("volume_mult", 1.5, 2.5, 0.5, "float"),
+    ],
+))
+
+# 82. Time + Volume Short - London（ロンドン時間 + 出来高急増ショート）
+_register(StrategyTemplate(
+    name="time_volume_short_london",
+    description="ロンドン時間(14:00-0:59) + 出来高急増でショート（2条件AND）",
+    config_template={
+        "name": "time_volume_short_london",
+        "side": "short",
+        "indicators": [],
+        "entry_conditions": [
+            {
+                "type": "time_based",
+                "start_hour": 14,
+                "end_hour": 0,
+            },
+            {
+                "type": "volume",
+                "volume_mult": "{volume_mult}",
+                "volume_period": 20,
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 1.5,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[
+        ParameterRange("volume_mult", 1.5, 2.5, 0.5, "float"),
+    ],
+))
+
+# 83. Time + BB Short - NewYork（ニューヨーク時間 + BB上限ショート）
+_register(StrategyTemplate(
+    name="time_bb_short_newyork",
+    description="ニューヨーク時間(21:00-5:59) + BB上限タッチでショート（2条件AND、日付跨ぎ）",
+    config_template={
+        "name": "time_bb_short_newyork",
+        "side": "short",
+        "indicators": [
+            {"type": "bollinger", "period": 20, "std_dev": "{bb_std}"},
+        ],
+        "entry_conditions": [
+            {
+                "type": "time_based",
+                "start_hour": 21,
+                "end_hour": 6,
+            },
+            {
+                "type": "column_compare",
+                "column_a": "close",
+                "operator": ">",
+                "column_b": "bb_upper_20",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 1.5,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[
+        ParameterRange("bb_std", 2.0, 2.5, 0.5, "float"),
+    ],
+))
+
+# 84. Time + Volume Short - NewYork（ニューヨーク時間 + 出来高急増ショート）
+_register(StrategyTemplate(
+    name="time_volume_short_newyork",
+    description="ニューヨーク時間(21:00-5:59) + 出来高急増でショート（2条件AND、日付跨ぎ）",
+    config_template={
+        "name": "time_volume_short_newyork",
+        "side": "short",
+        "indicators": [],
+        "entry_conditions": [
+            {
+                "type": "time_based",
+                "start_hour": 21,
+                "end_hour": 6,
+            },
+            {
+                "type": "volume",
+                "volume_mult": "{volume_mult}",
+                "volume_period": 20,
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 1.5,
+            "stop_loss_pct": 1.0,
+        },
+    },
+    param_ranges=[
+        ParameterRange("volume_mult", 1.5, 2.5, 0.5, "float"),
+    ],
+))
+
+# 85. BB Squeeze → 急落ショート（ガーディアンbot）
+_register(StrategyTemplate(
+    name="bb_squeeze_drop_short",
+    description="BB Squeeze + 下方ブレイク + 出来高急増でショート（急落検出）",
+    config_template={
+        "name": "bb_squeeze_drop_short",
+        "side": "short",
+        "indicators": [
+            {"type": "bollinger", "period": 20, "std_dev": 2.0},
+        ],
+        "entry_conditions": [
+            {
+                "type": "bb_squeeze",
+                "threshold": "{squeeze_threshold}",
+                "bb_period": 20,
+            },
+            {
+                "type": "column_compare",
+                "column_a": "close",
+                "operator": "<",
+                "column_b": "bb_lower_20",
+            },
+            {
+                "type": "volume",
+                "volume_mult": "{volume_mult}",
+                "volume_period": 20,
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.5,
+        },
+    },
+    param_ranges=[
+        ParameterRange("squeeze_threshold", 0.02, 0.04, 0.01, "float"),
+        ParameterRange("volume_mult", 1.5, 2.5, 0.5, "float"),
+    ],
+))
+
+# 86. ボラティリティブレイクアウト急落ショート（ガーディアンbot）
+_register(StrategyTemplate(
+    name="volatility_breakout_short",
+    description="BB下方ブレイク + 出来高急増 + RSI売られすぎでショート（急落検出）",
+    config_template={
+        "name": "volatility_breakout_short",
+        "side": "short",
+        "indicators": [
+            {"type": "bollinger", "period": 20, "std_dev": 2.0},
+            {"type": "rsi", "period": 14},
+        ],
+        "entry_conditions": [
+            {
+                "type": "column_compare",
+                "column_a": "close",
+                "operator": "<",
+                "column_b": "bb_lower_20",
+            },
+            {
+                "type": "volume",
+                "volume_mult": "{volume_mult}",
+                "volume_period": 20,
+            },
+            {
+                "type": "threshold",
+                "column": "rsi_14",
+                "operator": "<",
+                "value": "{rsi_threshold}",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.5,
+        },
+    },
+    param_ranges=[
+        ParameterRange("volume_mult", 2.0, 3.0, 0.5, "float"),
+        ParameterRange("rsi_threshold", 25, 35, 5, "int"),
+    ],
+))
+
+# 87. 急落率検出ショート（ガーディアンbot）
+_register(StrategyTemplate(
+    name="rapid_drop_short",
+    description="大陰線 + 出来高急増でショート（急落検出）",
+    config_template={
+        "name": "rapid_drop_short",
+        "side": "short",
+        "indicators": [],
+        "entry_conditions": [
+            {
+                "type": "candle",
+                "pattern": "bearish",
+            },
+            {
+                "type": "volume",
+                "volume_mult": "{volume_mult}",
+                "volume_period": 20,
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.5,
+        },
+    },
+    param_ranges=[
+        ParameterRange("volume_mult", 2.0, 3.0, 0.5, "float"),
+    ],
+))
+
+# 88. Volume急増ショート（条件緩和版: 単一条件）
+_register(StrategyTemplate(
+    name="volume_spike_short_relaxed",
+    description="出来高急増のみでショート（条件緩和版: 閾値1.3-1.8）",
+    config_template={
+        "name": "volume_spike_short_relaxed",
+        "side": "short",
+        "indicators": [],
+        "entry_conditions": [
+            {
+                "type": "volume",
+                "volume_mult": "{volume_mult}",
+                "volume_period": 20,
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.5,
+        },
+    },
+    param_ranges=[
+        ParameterRange("volume_mult", 1.3, 1.8, 0.25, "float"),
+    ],
+))
+
+# 89. BB Lower ショート（条件緩和版: 単一条件）
+_register(StrategyTemplate(
+    name="bb_lower_short_relaxed",
+    description="BB下限タッチのみでショート（条件緩和版: σ探索）",
+    config_template={
+        "name": "bb_lower_short_relaxed",
+        "side": "short",
+        "indicators": [
+            {"type": "bollinger", "period": 20, "std_dev": "{bb_std}"},
+        ],
+        "entry_conditions": [
+            {
+                "type": "column_compare",
+                "column_a": "close",
+                "operator": "<",
+                "column_b": "bb_lower_20",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.5,
+        },
+    },
+    param_ranges=[
+        ParameterRange("bb_std", 1.5, 2.5, 0.5, "float"),
+    ],
+))
+
+# 90. ボラティリティブレイクアウト（条件緩和版: 2条件AND）
+_register(StrategyTemplate(
+    name="volatility_breakout_relaxed",
+    description="BB下限 + 出来高緩和でショート（条件緩和版: volume 1.3-1.8）",
+    config_template={
+        "name": "volatility_breakout_relaxed",
+        "side": "short",
+        "indicators": [
+            {"type": "bollinger", "period": 20, "std_dev": "{bb_std}"},
+        ],
+        "entry_conditions": [
+            {
+                "type": "column_compare",
+                "column_a": "close",
+                "operator": "<",
+                "column_b": "bb_lower_20",
+            },
+            {
+                "type": "volume",
+                "volume_mult": "{volume_mult}",
+                "volume_period": 20,
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.5,
+        },
+    },
+    param_ranges=[
+        ParameterRange("volume_mult", 1.3, 1.8, 0.25, "float"),
+        ParameterRange("bb_std", 2.0, 2.5, 0.5, "float"),
+    ],
+))

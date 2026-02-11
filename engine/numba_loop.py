@@ -270,7 +270,8 @@ def _backtest_loop(
                     entry_price *= (1.0 - slippage_pct / 100.0)
 
             # ATR値取得（ATRベースexit/トレーリング時）
-            atr_idx = entry_idx
+            # シグナルバー(i)のATR値を使用（ルックアヘッド回避）
+            atr_idx = i
             atr_val = atr[atr_idx] if (use_atr_exit or use_atr_trailing) and len(atr) > atr_idx else 0.0
 
             tp_price, sl_price = _compute_tp_sl(
@@ -283,7 +284,8 @@ def _backtest_loop(
             trailing_dist = atr_val * atr_trailing_mult if use_atr_trailing else 0.0
 
             # BB exit モード: 初期TPをBB帯に設定（次バーから動的更新される）
-            bb_idx = entry_idx
+            # シグナルバー(i)の値を使用（ルックアヘッド回避）
+            bb_idx = i
             if use_bb_exit and len(bb_upper) > bb_idx:
                 if is_long:
                     bb_val = bb_upper[bb_idx]
@@ -295,7 +297,8 @@ def _backtest_loop(
                         tp_price = bb_val
 
             # VWAP exit モード: 初期TPをVWAPバンドに設定（次バーから動的更新される）
-            vwap_idx = entry_idx
+            # シグナルバー(i)の値を使用（ルックアヘッド回避）
+            vwap_idx = i
             if use_vwap_exit and len(vwap_upper) > vwap_idx:
                 if is_long:
                     vwap_val = vwap_upper[vwap_idx]
@@ -666,6 +669,55 @@ def vectorize_entry_signals(
                 signals.append(np.zeros(n, dtype=np.bool_))
                 continue
             signals.append(sig.fillna(False).values.astype(np.bool_))
+
+        elif ctype == "bb_squeeze":
+            threshold = c["threshold"]
+            bb_period = c.get("bb_period", 20)
+            bb_upper_col = f"bb_upper_{bb_period}"
+            bb_lower_col = f"bb_lower_{bb_period}"
+            bb_middle_col = f"bb_middle_{bb_period}"
+
+            if all(col in df.columns for col in [bb_upper_col, bb_lower_col, bb_middle_col]):
+                upper = df[bb_upper_col]
+                lower = df[bb_lower_col]
+                middle = df[bb_middle_col]
+                # ゼロ除算回避
+                bandwidth = (upper - lower) / middle.replace(0, np.nan)
+                sig = bandwidth < threshold
+                signals.append(sig.fillna(False).values.astype(np.bool_))
+            else:
+                signals.append(np.zeros(n, dtype=np.bool_))
+
+        elif ctype == "volume":
+            volume_mult = c["volume_mult"]
+            volume_period = c.get("volume_period", 20)
+            volume_sma_col = f"volume_sma_{volume_period}"
+
+            if "volume" in df.columns and volume_sma_col in df.columns:
+                volume = df["volume"]
+                avg_volume = df[volume_sma_col]
+                sig = volume >= (avg_volume * volume_mult)
+                signals.append(sig.fillna(False).values.astype(np.bool_))
+            else:
+                signals.append(np.zeros(n, dtype=np.bool_))
+
+        elif ctype == "ema_state":
+            fast_period = c["fast_period"]
+            slow_period = c["slow_period"]
+            direction = c["direction"]
+            ema_fast_col = f"ema_{fast_period}"
+            ema_slow_col = f"ema_{slow_period}"
+
+            if ema_fast_col in df.columns and ema_slow_col in df.columns:
+                fast = df[ema_fast_col]
+                slow = df[ema_slow_col]
+                if direction == "above":
+                    sig = fast > slow
+                else:
+                    sig = fast < slow
+                signals.append(sig.fillna(False).values.astype(np.bool_))
+            else:
+                signals.append(np.zeros(n, dtype=np.bool_))
 
         else:
             signals.append(np.zeros(n, dtype=np.bool_))

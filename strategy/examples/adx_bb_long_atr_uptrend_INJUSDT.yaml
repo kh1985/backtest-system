@@ -1,0 +1,29 @@
+# strategy/examples/adx_bb_long_atr_uptrend_INJUSDT.yaml
+template: adx_bb_long
+
+entry:
+  - indicator: adx
+    params:
+      period: 14
+    threshold: 20
+    comparison: ">"
+  - indicator: bollinger_bands
+    params:
+      period: 20
+      num_std_dev: 2.0
+    condition: price_below_lower
+
+exit:
+  take_profit_atr_mult: 3.0  # tp30 (3/5フォールド、ハイリスク戦略)
+  stop_loss_atr_mult: 2.0
+
+# 期待メトリクス
+# Stitched OOS PnL: +57.01%
+# CR: 60% (3/5 profitable folds)
+# WFE: 1.36 (OOS>IS、ラッキー要素?)
+# Avg OOS Win Rate: 59.1%
+# Avg OOS PF: 2.77
+# Avg OOS MaxDD: 10.24%
+# Strategy Stability: 0.60
+# 注意: Fold 0/4で大失敗（-2.24%, -12.62%）
+# 注意: tp30はハイリスク・ハイリターン型（PF高いが不安定）

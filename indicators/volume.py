@@ -134,6 +134,22 @@ class VWAP(Indicator):
         return True
 
 
+class VolumeSMA(Indicator):
+    """出来高の単純移動平均（VolumeConditionで使用）"""
+
+    def __init__(self, period: int = 20):
+        self.period = period
+        self.name = f"volume_sma_{period}"
+
+    def calculate(self, df: pd.DataFrame) -> pd.DataFrame:
+        df[self.name] = df["volume"].rolling(window=self.period).mean()
+        return df
+
+    @property
+    def columns(self) -> List[str]:
+        return [self.name]
+
+
 class RelativeVolume(Indicator):
     """相対出来高 (RVOL)"""
 

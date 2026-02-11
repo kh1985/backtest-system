@@ -1,0 +1,32 @@
+# EMA Fast Cross + BB Short - Downtrend用
+# テンプレート: ema_fast_cross_bb_short
+# レジーム: Downtrend (Dual-TF EMA)
+# Exit: tp=1.0%, sl=1.0%
+
+name: "ema_fast_cross_bb_short"
+side: short
+
+indicators:
+  - type: ema
+    period: 5
+  - type: ema
+    period: 13
+  - type: bollinger
+    period: 20
+    std_dev: 2.0
+
+entry_conditions:
+  - type: crossover
+    fast: ema_5
+    slow: ema_13
+    direction: below
+  - type: column_compare
+    column_a: close
+    operator: ">"
+    column_b: bb_middle_20
+
+entry_logic: and
+
+exit:
+  take_profit_pct: 1.0
+  stop_loss_pct: 1.0

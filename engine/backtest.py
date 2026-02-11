@@ -130,10 +130,18 @@ class BacktestEngine:
 
         if signal.side.value == "long":
             tp_price = entry_price * (1 + exit_rule.take_profit_pct / 100)
-            sl_price = entry_price * (1 - exit_rule.stop_loss_pct / 100)
+            # SL=0の場合、実質無効化
+            if exit_rule.stop_loss_pct == 0.0:
+                sl_price = 0.0  # ロングのSL下限を0に（事実上無効）
+            else:
+                sl_price = entry_price * (1 - exit_rule.stop_loss_pct / 100)
         else:
             tp_price = entry_price * (1 - exit_rule.take_profit_pct / 100)
-            sl_price = entry_price * (1 + exit_rule.stop_loss_pct / 100)
+            # SL=0の場合、実質無効化
+            if exit_rule.stop_loss_pct == 0.0:
+                sl_price = float('inf')  # ショートのSL上限を∞に（事実上無効）
+            else:
+                sl_price = entry_price * (1 + exit_rule.stop_loss_pct / 100)
 
         return Position(
             entry_price=entry_price,
