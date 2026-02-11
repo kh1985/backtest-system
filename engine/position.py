@@ -69,12 +69,7 @@ class Position:
 
         duration = current_index - self.entry_index
 
-        # タイムアウト判定
-        if self.timeout_bars and duration >= self.timeout_bars:
-            return self._create_trade(
-                close, current_time, duration, "TIMEOUT"
-            )
-
+        # TP/SLを先に評価: タイムアウトバーでもTP/SLが優先
         if self.side == "long":
             tp_hit = high >= self.tp_price
             sl_hit = low <= self.sl_price
@@ -107,6 +102,12 @@ class Position:
                 return self._create_trade(
                     self.sl_price, current_time, duration, "SL"
                 )
+
+        # タイムアウト判定
+        if self.timeout_bars and duration >= self.timeout_bars:
+            return self._create_trade(
+                close, current_time, duration, "TIMEOUT"
+            )
 
         return None
 

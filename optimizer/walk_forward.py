@@ -377,6 +377,7 @@ def _compute_aggregate_metrics(
         is_pnls = []
         oos_pnls = []
         strategy_names = []
+        total_folds = len(result_set.folds)
 
         for fold in result_set.folds:
             is_entry = fold.selected_strategy.get(regime)
@@ -400,12 +401,17 @@ def _compute_aggregate_metrics(
             )
 
         # Consistency Ratio
-        if oos_pnls:
+        if total_folds > 0:
             positive_count = sum(1 for p in oos_pnls if p > 0)
+            # CR分母: トレード無しフォールドも含めた全フォールド数を使用
             result_set.consistency_ratio[regime] = (
-                positive_count / len(oos_pnls)
+                positive_count / total_folds
             )
-            result_set.stitched_oos_pnl[regime] = float(np.sum(oos_pnls))
+
+        if oos_pnls:
+            # OOS PnL: フォールド間リターンを複利計算で集計
+            compounded_return = np.prod([1.0 + (p / 100.0) for p in oos_pnls]) - 1.0
+            result_set.stitched_oos_pnl[regime] = float(compounded_return * 100.0)
 
         # Strategy Stability: 最頻戦略の割合
         if strategy_names:

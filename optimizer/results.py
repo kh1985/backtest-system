@@ -144,6 +144,7 @@ class OptimizationResultSet:
                 max_drawdown_pct=m.max_drawdown_pct,
                 sharpe_ratio=m.sharpe_ratio,
                 total_return_pct=m.total_profit_pct,
+                total_trades=m.total_trades,
                 weights=weights,
             )
 

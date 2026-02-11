@@ -25,12 +25,21 @@ class TrendRegime(Enum):
 class TrendDetector:
     """トレンドレジーム検出器"""
 
+    @staticmethod
+    def _apply_no_lookahead_shift(
+        regime: pd.Series,
+        neutral_value: str = TrendRegime.RANGE.value,
+    ) -> pd.Series:
+        # 1バーシフト: HTFバーのclose確定後に初めてレジームが利用可能
+        return regime.shift(1).fillna(neutral_value)
+
     def detect_ma_cross(
         self,
         df: pd.DataFrame,
         fast_period: int = 20,
         slow_period: int = 50,
         range_threshold_pct: float = 0.1,
+        apply_shift: bool = True,
     ) -> pd.DataFrame:
         """
         MA Cross方式でトレンドを判定
@@ -61,7 +70,11 @@ class TrendDetector:
         regime[sma_fast < sma_slow] = TrendRegime.DOWNTREND.value
         regime[diff_pct < range_threshold_pct] = TrendRegime.RANGE.value
 
-        df["trend_regime"] = regime
+        regime_series = pd.Series(regime, index=df.index)
+        if apply_shift:
+            regime_series = self._apply_no_lookahead_shift(regime_series)
+
+        df["trend_regime"] = regime_series
         df["trend_sma_fast"] = sma_fast
         df["trend_sma_slow"] = sma_slow
 
@@ -114,7 +127,8 @@ class TrendDetector:
         # ADX < range_threshold → レンジ
         regime[adx_vals < range_threshold] = TrendRegime.RANGE.value
 
-        df["trend_regime"] = regime
+        regime_series = self._apply_no_lookahead_shift(regime)
+        df["trend_regime"] = regime_series
 
         return df
 
@@ -137,7 +151,7 @@ class TrendDetector:
         Returns:
             DataFrame with 'trend_regime' column added
         """
-        df = self.detect_ma_cross(df, ma_fast, ma_slow)
+        df = self.detect_ma_cross(df, ma_fast, ma_slow, apply_shift=False)
         ma_regime = df["trend_regime"].copy()
 
         from indicators.adx import ADX as ADXIndicator
@@ -150,6 +164,7 @@ class TrendDetector:
         # ADXが低い場合はRangeに上書き
         df["trend_regime"] = ma_regime
         df.loc[adx_vals < adx_range_threshold, "trend_regime"] = TrendRegime.RANGE.value
+        df["trend_regime"] = self._apply_no_lookahead_shift(df["trend_regime"])
 
         return df
 
@@ -189,6 +204,8 @@ class TrendDetector:
         # up=1, down=-1
         super_dir = np.where(s_ema_fast > s_ema_slow, 1, -1)
         super_htf_df["_trend_dir"] = super_dir
+        # 4hバーのclose確定後に初めて方向が利用可能（merge_asof前にシフト）
+        super_htf_df["_trend_dir"] = super_htf_df["_trend_dir"].shift(1)
 
         # --- 1h: EMA計算 & 方向判定 ---
         h_close = htf_df["close"]
@@ -221,7 +238,8 @@ class TrendDetector:
         regime[both_up] = TrendRegime.UPTREND.value
         regime[both_down] = TrendRegime.DOWNTREND.value
 
-        htf_df["trend_regime"] = regime
+        regime_series = pd.Series(regime, index=htf_df.index)
+        htf_df["trend_regime"] = self._apply_no_lookahead_shift(regime_series)
         htf_df["trend_ema_fast"] = h_ema_fast
         htf_df["trend_ema_slow"] = h_ema_slow
 

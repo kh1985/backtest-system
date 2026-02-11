@@ -303,15 +303,39 @@ class IndicatorCache:
         self._cache: OrderedDict[str, pd.DataFrame] = OrderedDict()
         self._maxsize = maxsize
 
-    def get_key(self, indicator_configs: List[Dict], df_size: int = 0) -> str:
+    def get_key(
+        self,
+        indicator_configs: List[Dict],
+        df: Optional[pd.DataFrame] = None,
+        df_size: int = 0,
+    ) -> str:
         """インジケーター設定からキャッシュキーを生成
 
         Args:
             indicator_configs: インジケーター設定
-            df_size: DataFrameのサイズ（異なるデータセットを区別するため）
+            df: 対象DataFrame（先頭/末尾の時系列情報をキーに含める）
+            df_size: DataFrameのサイズ（後方互換用）
         """
         serialized = json.dumps(indicator_configs, sort_keys=True)
-        key_data = f"{serialized}_{df_size}"
+        range_start = "none"
+        range_end = "none"
+        datetime_start = "none"
+        datetime_end = "none"
+
+        if df is not None:
+            df_size = len(df)
+            if len(df) > 0:
+                range_start = str(df.index[0])
+                range_end = str(df.index[-1])
+                if "datetime" in df.columns:
+                    datetime_start = str(df["datetime"].iloc[0])
+                    datetime_end = str(df["datetime"].iloc[-1])
+
+        # キャッシュキーにデータ範囲を含めてtrain/val/test間の漏洩を防止
+        key_data = (
+            f"{serialized}_{df_size}_{range_start}_{range_end}_"
+            f"{datetime_start}_{datetime_end}"
+        )
         return hashlib.md5(key_data.encode()).hexdigest()
 
     def get(self, key: str) -> Optional[pd.DataFrame]:
@@ -479,7 +503,7 @@ class GridSearchOptimizer:
 
         for config_copy, _, _ in task_configs:
             indicator_configs = config_copy.get("indicators", [])
-            cache_key = cache.get_key(indicator_configs)
+            cache_key = cache.get_key(indicator_configs, df=df)
 
             if cache_key not in precomputed:
                 strategy = ConfigStrategy(config_copy)
@@ -517,7 +541,7 @@ class GridSearchOptimizer:
         task_id = 0
         for config_copy, template_name, params in task_configs:
             indicator_configs = config_copy.get("indicators", [])
-            cache_key = cache.get_key(indicator_configs)
+            cache_key = cache.get_key(indicator_configs, df=df)
 
             for regime in target_regimes:
                 tasks.append(_BacktestTask(
@@ -613,7 +637,7 @@ class GridSearchOptimizer:
         else:
             # 通常モード: キャッシュ利用 — 全データで計算
             indicator_configs = config.get("indicators", [])
-            cache_key = self._indicator_cache.get_key(indicator_configs, df_size=len(df))
+            cache_key = self._indicator_cache.get_key(indicator_configs, df=df)
             cached_df = self._indicator_cache.get(cache_key)
 
             if cached_df is not None:
@@ -795,6 +819,7 @@ class GridSearchOptimizer:
             max_drawdown_pct=metrics.max_drawdown_pct,
             sharpe_ratio=metrics.sharpe_ratio,
             total_return_pct=metrics.total_profit_pct,
+            total_trades=metrics.total_trades,
             weights=self.scoring_weights,
         )
 

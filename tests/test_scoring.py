@@ -146,6 +146,18 @@ class TestCompositeScore:
         # PF が高いので PF 重視の方がスコアが高い
         assert s_pf_heavy != s_default
 
+    def test_zero_trades_forces_zero_score(self):
+        """トレード0件ならスコアは常に0"""
+        score = calculate_composite_score(
+            profit_factor=10.0,
+            win_rate=100.0,
+            max_drawdown_pct=0.0,
+            sharpe_ratio=5.0,
+            total_return_pct=100.0,
+            total_trades=0,
+        )
+        assert score == 0.0
+
 
 # ---------------------------------------------------------------------------
 # detect_overfitting_warnings

@@ -38,6 +38,7 @@ def calculate_composite_score(
     max_drawdown_pct: float,
     sharpe_ratio: float,
     total_return_pct: float = 0.0,
+    total_trades: Optional[int] = None,
     weights: ScoringWeights = None,
 ) -> float:
     """
@@ -54,6 +55,10 @@ def calculate_composite_score(
     """
     if weights is None:
         weights = ScoringWeights()
+
+    # トレード0件は即スコア0（ランキング汚染防止）
+    if total_trades == 0:
+        return 0.0
 
     # PF正規化: クリップ後 0-1
     pf_clipped = np.clip(profit_factor, 0, 10)

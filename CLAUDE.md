@@ -114,6 +114,7 @@ backtest-system/
 
 ## Workflow rules for Claude Code
 
+- **Codex併用**: このプロジェクトは必要に応じてCodexも併用する。ClaudeはCodexによる変更や提案が含まれる前提で扱うこと（不審扱いしない）。
 - 複雑な変更は必ず最初にPLAN提示
 - 変更は論理的な単位で小さく進める
 - ファイル削除や構造変更は事前確認必須

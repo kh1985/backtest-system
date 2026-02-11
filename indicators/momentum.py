@@ -21,11 +21,12 @@ class RSI(Indicator):
         gain = delta.where(delta > 0, 0.0)
         loss = -delta.where(delta < 0, 0.0)
 
+        # Wilder's smoothing: adjust=False で再帰的平滑化（業界標準RSI）
         avg_gain = gain.ewm(
-            alpha=1 / self.period, min_periods=self.period
+            alpha=1 / self.period, min_periods=self.period, adjust=False
         ).mean()
         avg_loss = loss.ewm(
-            alpha=1 / self.period, min_periods=self.period
+            alpha=1 / self.period, min_periods=self.period, adjust=False
         ).mean()
 
         rs = avg_gain / avg_loss
