@@ -719,6 +719,49 @@ def vectorize_entry_signals(
             else:
                 signals.append(np.zeros(n, dtype=np.bool_))
 
+        elif ctype == "supertrend":
+            period = c["period"]
+            multiplier = c["multiplier"]
+            direction = c.get("direction", "below")
+            st_col = f"supertrend_{period}_{multiplier}"
+            if st_col in df.columns:
+                if direction == "below":
+                    sig = df["close"] < df[st_col]
+                else:
+                    sig = df["close"] > df[st_col]
+                signals.append(sig.fillna(False).values.astype(np.bool_))
+            else:
+                signals.append(np.zeros(n, dtype=np.bool_))
+
+        elif ctype == "tsmom":
+            roc_period = c["roc_period"]
+            threshold = c.get("threshold", 0.0)
+            roc_col = f"roc_{roc_period}"
+            if roc_col in df.columns:
+                sig = df[roc_col] < threshold
+                signals.append(sig.fillna(False).values.astype(np.bool_))
+            else:
+                signals.append(np.zeros(n, dtype=np.bool_))
+
+        elif ctype == "rsi_connors":
+            sma_period = c["sma_period"]
+            rsi_threshold = c["rsi_threshold"]
+            sma_col = f"sma_{sma_period}"
+            if sma_col in df.columns and "rsi_2" in df.columns:
+                sig = (df["close"] < df[sma_col]) & (df["rsi_2"] > rsi_threshold)
+                signals.append(sig.fillna(False).values.astype(np.bool_))
+            else:
+                signals.append(np.zeros(n, dtype=np.bool_))
+
+        elif ctype == "donchian":
+            period = c["period"]
+            donchian_col = f"donchian_lower_{period}"
+            if donchian_col in df.columns:
+                sig = df["close"] < df[donchian_col]
+                signals.append(sig.fillna(False).values.astype(np.bool_))
+            else:
+                signals.append(np.zeros(n, dtype=np.bool_))
+
         else:
             signals.append(np.zeros(n, dtype=np.bool_))
 
