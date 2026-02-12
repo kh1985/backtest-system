@@ -46,6 +46,17 @@
 - Windows: `PYTHONUTF8=1 PYTHONIOENCODING=utf-8` 必須（cp932問題）
 - Modal CLIは bash環境変数形式で渡す: `PYTHONUTF8=1 modal run ...`
 
+## HH/LL regime=trade 検証結果（2026-02-12: 不合格・見送り）
+- 15m単独: Short -37%、Long -7%。トレード数年400-1000回で手数料死
+- MSB調整(3→20): 効果なし。トレード数288-410で高止まり
+- MTF(15m+1h): 15m単独より悪化。1hフィルターが機能しない
+- **結論: SwingStructure regime=trade は構造的にワークしない**
+
+## 下落戦略リサーチ結果（2026-02-12）
+- 即実装可: TSMOM, SuperTrend, RSI(2) Connors, Donchian ブレイクダウン
+- 追加実装要: BB-Keltner Squeeze, KAMA, Williams VIX Fix
+- **キー知見: 下落初動は獲れない。ベアラリー頂点を売るか第2幕に乗るかの二択**
+
 ## Modalスクリプト一覧
 | スクリプト | 用途 |
 |-----------|------|
@@ -54,6 +65,8 @@
 | `scripts/modal_wfa.py` | WFA検証（最終判定用）`--templates all` 対応 |
 | `scripts/modal_regime_check.py` | レジーム分布確認 |
 | `scripts/modal_download.py` | 結果DL（`wfa/`対応済み） |
+| `scripts/modal_swing_poc.py` | 15m HH/LL regime=trade POC（不合格） |
+| `scripts/modal_swing_mtf.py` | 15m+1h MTF regime=trade POC（不合格） |
 
 ## ファイル構成
 - セッションログ: `.claude/memory/sessions/YYYY-MM-DD.md`
