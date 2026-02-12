@@ -164,3 +164,44 @@ class ParabolicSAR(Indicator):
     @property
     def is_overlay(self) -> bool:
         return True
+
+
+class DonchianChannel(Indicator):
+    """
+    Donchian Channel
+
+    過去N本の高値・安値チャネル。タートル流ブレイクアウト戦略で使用。
+    - donchian_upper: 過去N本の最高値（ブレイクアウト判定）
+    - donchian_lower: 過去N本の最安値（ブレイクダウン判定）
+    - donchian_middle: (upper + lower) / 2
+
+    Parameters:
+        period: チャネル期間（デフォルト 20）
+    """
+
+    def __init__(self, period: int = 20):
+        self.period = period
+        self.name = f"donchian_{period}"
+
+    def calculate(self, df: pd.DataFrame) -> pd.DataFrame:
+        # 過去N本の最高値・最安値（現在足は除外）
+        # NOTE: rolling().max()/min()は現在足を含むため、.shift(1)で1本ずらす
+        df[f"donchian_upper_{self.period}"] = df["high"].shift(1).rolling(window=self.period).max()
+        df[f"donchian_lower_{self.period}"] = df["low"].shift(1).rolling(window=self.period).min()
+        df[f"donchian_middle_{self.period}"] = (
+            df[f"donchian_upper_{self.period}"] + df[f"donchian_lower_{self.period}"]
+        ) / 2.0
+
+        return df
+
+    @property
+    def columns(self) -> List[str]:
+        return [
+            f"donchian_upper_{self.period}",
+            f"donchian_lower_{self.period}",
+            f"donchian_middle_{self.period}",
+        ]
+
+    @property
+    def is_overlay(self) -> bool:
+        return True
