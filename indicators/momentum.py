@@ -85,3 +85,20 @@ class Stochastic(Indicator):
     def columns(self) -> List[str]:
         k = self.k_period
         return [f"stoch_k_{k}", f"stoch_d_{k}"]
+
+
+class ROC(Indicator):
+    """Rate of Change (モメンタム指標)"""
+
+    def __init__(self, period: int = 30):
+        self.period = period
+        self.name = f"roc_{period}"
+
+    def calculate(self, df: pd.DataFrame) -> pd.DataFrame:
+        # ROC = (close - close[period]) / close[period] * 100
+        df[self.name] = df["close"].pct_change(periods=self.period) * 100
+        return df
+
+    @property
+    def columns(self) -> List[str]:
+        return [self.name]

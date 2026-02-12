@@ -457,3 +457,36 @@ class VolumeProfile(Indicator):
     @property
     def is_overlay(self) -> bool:
         return True
+
+
+def add_volume_spike_indicators(df: pd.DataFrame) -> pd.DataFrame:
+    """Volume Spike検出用インジケーターを追加
+
+    Volume関連:
+    - volume_sma_20: Volume 20期間移動平均
+    - volume_ratio_3/5: Volume変化率（3/5期間前比）
+    - volume_accel_3: Volume加速度（2次微分）
+
+    価格関連:
+    - close_pct_change_3: 価格変化率（3期間前比）
+    """
+    # Volume SMA（既存のVolumeSMAと同等だが直接追加）
+    df["volume_sma_20"] = df["volume"].rolling(20).mean()
+
+    # Volume変化率（期間前比）
+    df["volume_ratio_3"] = df["volume"] / df["volume"].shift(3).replace(0, np.nan)
+    df["volume_ratio_5"] = df["volume"] / df["volume"].shift(5).replace(0, np.nan)
+
+    # Volume加速度（2次微分）
+    # vol_change[t] = volume[t] / volume[t-1]
+    # vol_accel[t] = vol_change[t] / vol_change[t-lookback]
+    vol_change_1 = df["volume"] / df["volume"].shift(1).replace(0, np.nan)
+    vol_change_3_shifted = vol_change_1.shift(3)
+    df["volume_accel_3"] = vol_change_1 / vol_change_3_shifted.replace(0, np.nan)
+
+    # 価格変化率（%）
+    df["close_pct_change_3"] = (
+        (df["close"] - df["close"].shift(3)) / df["close"].shift(3).replace(0, np.nan) * 100
+    )
+
+    return df

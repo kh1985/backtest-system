@@ -7,9 +7,9 @@
 from typing import Dict, Type
 
 from .base import Indicator
-from .trend import SMA, EMA, ParabolicSAR
-from .momentum import RSI, MACD, Stochastic
-from .volatility import BollingerBands, ATR
+from .trend import SMA, EMA, ParabolicSAR, DonchianChannel
+from .momentum import RSI, MACD, Stochastic, ROC
+from .volatility import BollingerBands, ATR, SuperTrend
 from .volume import VWAP, RelativeVolume, VolumeAnalysis, VolumeProfile, VolumeSMA
 from .adx import ADX
 from .structure import SwingStructure, TrendStructure
@@ -19,11 +19,14 @@ INDICATOR_REGISTRY: Dict[str, Type[Indicator]] = {
     "sma": SMA,
     "ema": EMA,
     "sar": ParabolicSAR,
+    "donchian": DonchianChannel,
     "rsi": RSI,
     "macd": MACD,
     "stochastic": Stochastic,
+    "roc": ROC,
     "bollinger": BollingerBands,
     "atr": ATR,
+    "supertrend": SuperTrend,
     "vwap": VWAP,
     "rvol": RelativeVolume,
     "volume_analysis": VolumeAnalysis,
@@ -39,11 +42,14 @@ INDICATOR_INFO = {
     "sma": {"label": "SMA (単純移動平均)", "params": {"period": 20, "source": "close"}},
     "ema": {"label": "EMA (指数移動平均)", "params": {"period": 20, "source": "close"}},
     "sar": {"label": "Parabolic SAR", "params": {"af_start": 0.02, "af_step": 0.02, "af_max": 0.2}},
+    "donchian": {"label": "Donchian Channel", "params": {"period": 20}},
     "rsi": {"label": "RSI", "params": {"period": 14}},
     "macd": {"label": "MACD", "params": {"fast": 12, "slow": 26, "signal": 9}},
     "stochastic": {"label": "Stochastic", "params": {"k_period": 14, "d_period": 3}},
+    "roc": {"label": "ROC (Rate of Change)", "params": {"period": 30}},
     "bollinger": {"label": "Bollinger Bands", "params": {"period": 20, "std_dev": 2.0}},
     "atr": {"label": "ATR", "params": {"period": 14}},
+    "supertrend": {"label": "SuperTrend", "params": {"period": 10, "multiplier": 3.0}},
     "vwap": {"label": "VWAP", "params": {"switch_hour": 1}},
     "rvol": {"label": "RVOL (相対出来高)", "params": {"period": 20}},
     "volume_analysis": {"label": "Volume Analysis", "params": {}},

@@ -3233,3 +3233,543 @@ _register(StrategyTemplate(
         ParameterRange("bb_std", 2.0, 2.5, 0.5, "float"),
     ],
 ))
+
+# 91. RSI(2) Connors式ショート
+_register(StrategyTemplate(
+    name="rsi_connors_short",
+    description="RSI(2) Connors式: SMA下 + RSI(2)高値圏でベアラリー頂点を売る",
+    config_template={
+        "name": "rsi_connors_short",
+        "side": "short",
+        "indicators": [
+            {"type": "sma", "period": "{sma_period}", "source": "close"},
+            {"type": "rsi", "period": 2},
+        ],
+        "entry_conditions": [
+            {
+                "type": "rsi_connors",
+                "sma_period": "{sma_period}",
+                "rsi_threshold": "{rsi_threshold}",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.5,
+        },
+    },
+    param_ranges=[
+        ParameterRange("sma_period", 150, 250, 50, "int"),  # 150, 200, 250
+        ParameterRange("rsi_threshold", 90, 98, 4, "int"),  # 90, 94, 98
+    ],
+))
+
+# 92. TSMOM (Time Series Momentum) ショート
+_register(StrategyTemplate(
+    name="tsmom_short",
+    description="TSMOM: ROC(20-40) < threshold でショート（AQR クライシスアルファ）",
+    config_template={
+        "name": "tsmom_short",
+        "side": "short",
+        "indicators": [
+            {"type": "roc", "period": "{roc_period}"},
+        ],
+        "entry_conditions": [
+            {
+                "type": "tsmom",
+                "roc_period": "{roc_period}",
+                "threshold": "{threshold}",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.5,
+        },
+    },
+    param_ranges=[
+        ParameterRange("roc_period", 20, 40, 10, "int"),  # 20, 30, 40
+        ParameterRange("threshold", -5, 0, 5, "int"),      # -5, 0
+    ],
+))
+
+# 93. SuperTrend ショート
+_register(StrategyTemplate(
+    name="supertrend_short",
+    description="SuperTrend: close < supertrend でショート（ATR適応型トレンド指標）",
+    config_template={
+        "name": "supertrend_short",
+        "side": "short",
+        "indicators": [
+            {"type": "supertrend", "period": "{period}", "multiplier": "{multiplier}"},
+        ],
+        "entry_conditions": [
+            {
+                "type": "supertrend",
+                "period": "{period}",
+                "multiplier": "{multiplier}",
+                "direction": "below",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.5,
+        },
+    },
+    param_ranges=[
+        ParameterRange("period", 7, 14, 3, "int"),       # 7, 10, 14
+        ParameterRange("multiplier", 2.0, 3.0, 1.0, "float"),  # 2.0, 3.0
+    ],
+))
+
+# 94. Donchian Channel ブレイクダウンショート（タートル流）
+# Step 18: タートル流。20日安値ブレイクでショート
+_register(StrategyTemplate(
+    name="donchian_breakdown_short",
+    description="Donchian Channel 安値ブレイクでショート（タートル流）",
+    config_template={
+        "name": "donchian_breakdown_short",
+        "side": "short",
+        "indicators": [
+            {"type": "donchian", "period": "{period}"},
+        ],
+        "entry_conditions": [
+            {
+                "type": "donchian",
+                "period": "{period}",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.5,
+        },
+    },
+    param_ranges=[
+        ParameterRange("period", 10, 40, 10, "int"),  # 10, 20, 30, 40
+    ],
+))
+
+# =============================================================================
+# Volume Spike戦略（急落検出ショート・2026-02-12 Phase 1実装）
+# =============================================================================
+
+_register(StrategyTemplate(
+    name="multi_layer_volume_spike_short",
+    description="多層Volume Spike検出ショート（3層フィルター）",
+    config_template={
+        "name": "multi_layer_volume_spike_short",
+        "side": "short",
+        "indicators": [
+            {"type": "volume_spike_indicators"},
+        ],
+        "entry_conditions": [
+            {
+                "type": "multi_layer_volume_spike",
+                "spike_threshold": "{spike_threshold}",
+                "price_drop_pct": "{price_drop_pct}",
+                "consecutive_bars": "{consecutive_bars}",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.0,
+            "timeout_bars": 20,
+        },
+    },
+    param_ranges=[
+        ParameterRange("spike_threshold", 2.0, 3.0, 0.5, "float"),  # 2.0, 2.5, 3.0
+        ParameterRange("price_drop_pct", 1.5, 2.5, 0.5, "float"),   # 1.5, 2.0, 2.5
+        ParameterRange("consecutive_bars", 1, 3, 1, "int"),         # 1, 2, 3
+    ],
+))
+
+_register(StrategyTemplate(
+    name="volume_accel_short",
+    description="Volume加速度検出ショート（BB下限ブレイク付き）",
+    config_template={
+        "name": "volume_accel_short",
+        "side": "short",
+        "indicators": [
+            {"type": "volume_spike_indicators"},
+            {"type": "bollinger", "period": 20, "std_dev": 2.0},
+        ],
+        "entry_conditions": [
+            {
+                "type": "volume_acceleration",
+                "accel_threshold": "{accel_threshold}",
+                "lookback": "{lookback}",
+            },
+            {
+                "type": "threshold",
+                "column": "close",
+                "operator": "<",
+                "value": "bb_lower_20",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.0,
+            "timeout_bars": 20,
+        },
+    },
+    param_ranges=[
+        ParameterRange("accel_threshold", 1.5, 2.5, 0.5, "float"),  # 1.5, 2.0, 2.5
+        ParameterRange("lookback", 2, 4, 1, "int"),                 # 2, 3, 4
+    ],
+))
+
+_register(StrategyTemplate(
+    name="price_vol_divergence_short",
+    description="価格Volume逆行検出ショート",
+    config_template={
+        "name": "price_vol_divergence_short",
+        "side": "short",
+        "indicators": [
+            {"type": "volume_spike_indicators"},
+        ],
+        "entry_conditions": [
+            {
+                "type": "price_volume_divergence",
+                "price_change_threshold": "{price_threshold}",
+                "volume_change_threshold": "{vol_threshold}",
+                "period": "{period}",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.0,
+            "timeout_bars": 20,
+        },
+    },
+    param_ranges=[
+        ParameterRange("price_threshold", -2.5, -1.0, 0.5, "float"),  # -2.5, -2.0, -1.5, -1.0
+        ParameterRange("vol_threshold", 2.0, 3.0, 0.5, "float"),      # 2.0, 2.5, 3.0
+        ParameterRange("period", 2, 4, 1, "int"),                     # 2, 3, 4
+    ],
+))
+
+_register(StrategyTemplate(
+    name="volume_spike_bb_short",
+    description="Volume Spike + BB下限ブレイク（複合版）",
+    config_template={
+        "name": "volume_spike_bb_short",
+        "side": "short",
+        "indicators": [
+            {"type": "volume_spike_indicators"},
+            {"type": "bollinger", "period": 20, "std_dev": 2.0},
+        ],
+        "entry_conditions": [
+            {
+                "type": "multi_layer_volume_spike",
+                "spike_threshold": "{spike_threshold}",
+                "price_drop_pct": 2.0,
+                "consecutive_bars": 2,
+            },
+            {
+                "type": "threshold",
+                "column": "close",
+                "operator": "<",
+                "value": "bb_lower_20",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.0,
+            "timeout_bars": 20,
+        },
+    },
+    param_ranges=[
+        ParameterRange("spike_threshold", 2.0, 3.0, 0.5, "float"),  # 2.0, 2.5, 3.0
+    ],
+))
+
+_register(StrategyTemplate(
+    name="volume_accel_rsi_short",
+    description="Volume加速度 + RSI買われすぎ（複合版）",
+    config_template={
+        "name": "volume_accel_rsi_short",
+        "side": "short",
+        "indicators": [
+            {"type": "volume_spike_indicators"},
+            {"type": "rsi", "period": 14},
+        ],
+        "entry_conditions": [
+            {
+                "type": "volume_acceleration",
+                "accel_threshold": "{accel_threshold}",
+                "lookback": 3,
+            },
+            {
+                "type": "threshold",
+                "column": "rsi_14",
+                "operator": ">",
+                "value": 65,
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.0,
+            "timeout_bars": 20,
+        },
+    },
+    param_ranges=[
+        ParameterRange("accel_threshold", 1.5, 2.5, 0.5, "float"),  # 1.5, 2.0, 2.5
+    ],
+))
+
+_register(StrategyTemplate(
+    name="price_vol_divergence_adx_short",
+    description="価格Volume逆行 + ADX強トレンド（複合版）",
+    config_template={
+        "name": "price_vol_divergence_adx_short",
+        "side": "short",
+        "indicators": [
+            {"type": "volume_spike_indicators"},
+            {"type": "adx", "period": 14},
+        ],
+        "entry_conditions": [
+            {
+                "type": "price_volume_divergence",
+                "price_change_threshold": -2.0,
+                "volume_change_threshold": "{vol_threshold}",
+                "period": 3,
+            },
+            {
+                "type": "threshold",
+                "column": "adx_14",
+                "operator": ">=",
+                "value": 25,
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.0,
+            "timeout_bars": 20,
+        },
+    },
+    param_ranges=[
+        ParameterRange("vol_threshold", 2.0, 3.0, 0.5, "float"),  # 2.0, 2.5, 3.0
+    ],
+))
+
+# =============================================================================
+# SLなしショート戦略（SL狩り回避版・2026-02-12実装）
+# =============================================================================
+
+# 1. RSI(2) Connors式ショート（SLなし版）
+_register(StrategyTemplate(
+    name="rsi_connors_short_nosl",
+    description="RSI(2) Connors式: SMA下 + RSI(2)高値圏でベアラリー頂点を売る（SLなし・SL狩り回避版）",
+    config_template={
+        "name": "rsi_connors_short_nosl",
+        "side": "short",
+        "indicators": [
+            {"type": "sma", "period": "{sma_period}", "source": "close"},
+            {"type": "rsi", "period": 2},
+        ],
+        "entry_conditions": [
+            {
+                "type": "rsi_connors",
+                "sma_period": "{sma_period}",
+                "rsi_threshold": "{rsi_threshold}",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 0,
+        },
+    },
+    param_ranges=[
+        ParameterRange("sma_period", 150, 250, 50, "int"),  # 150, 200, 250
+        ParameterRange("rsi_threshold", 90, 98, 4, "int"),  # 90, 94, 98
+    ],
+))
+
+# 2. TSMOM (Time Series Momentum) ショート（SLなし版）
+_register(StrategyTemplate(
+    name="tsmom_short_nosl",
+    description="TSMOM: ROC(20-40) < threshold でショート（AQR クライシスアルファ）（SLなし・SL狩り回避版）",
+    config_template={
+        "name": "tsmom_short_nosl",
+        "side": "short",
+        "indicators": [
+            {"type": "roc", "period": "{roc_period}"},
+        ],
+        "entry_conditions": [
+            {
+                "type": "tsmom",
+                "roc_period": "{roc_period}",
+                "threshold": "{threshold}",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 0,
+        },
+    },
+    param_ranges=[
+        ParameterRange("roc_period", 20, 40, 10, "int"),  # 20, 30, 40
+        ParameterRange("threshold", -5, 0, 5, "int"),      # -5, 0
+    ],
+))
+
+# 3. SuperTrend ショート（SLなし版）
+_register(StrategyTemplate(
+    name="supertrend_short_nosl",
+    description="SuperTrend: close < supertrend でショート（ATR適応型トレンド指標）（SLなし・SL狩り回避版）",
+    config_template={
+        "name": "supertrend_short_nosl",
+        "side": "short",
+        "indicators": [
+            {"type": "supertrend", "period": "{period}", "multiplier": "{multiplier}"},
+        ],
+        "entry_conditions": [
+            {
+                "type": "supertrend",
+                "period": "{period}",
+                "multiplier": "{multiplier}",
+                "direction": "below",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 0,
+        },
+    },
+    param_ranges=[
+        ParameterRange("period", 7, 14, 3, "int"),       # 7, 10, 14
+        ParameterRange("multiplier", 2.0, 3.0, 1.0, "float"),  # 2.0, 3.0
+    ],
+))
+
+# 4. Donchian Channel ブレイクダウンショート（SLなし版）
+_register(StrategyTemplate(
+    name="donchian_breakdown_short_nosl",
+    description="Donchian Channel 安値ブレイクでショート（タートル流）（SLなし・SL狩り回避版）",
+    config_template={
+        "name": "donchian_breakdown_short_nosl",
+        "side": "short",
+        "indicators": [
+            {"type": "donchian", "period": "{period}"},
+        ],
+        "entry_conditions": [
+            {
+                "type": "donchian",
+                "period": "{period}",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 0,
+        },
+    },
+    param_ranges=[
+        ParameterRange("period", 10, 40, 10, "int"),  # 10, 20, 30, 40
+    ],
+))
+
+# 5. EMA(5) < EMA(13) + BB中間ショート（SLなし版）
+_register(StrategyTemplate(
+    name="ema_fast_cross_bb_short_nosl",
+    description="EMA(5)<EMA(13) + close > BB中間でショート（高速EMAでDT早期エントリー）（SLなし・SL狩り回避版）",
+    config_template={
+        "name": "ema_fast_cross_bb_short_nosl",
+        "side": "short",
+        "indicators": [
+            {"type": "ema", "period": 5},
+            {"type": "ema", "period": 13},
+            {"type": "bollinger", "period": 20, "std_dev": 2.0},
+        ],
+        "entry_conditions": [
+            {"type": "crossover", "fast": "ema_5", "slow": "ema_13", "direction": "below"},
+            {"type": "column_compare", "column_a": "close", "operator": ">", "column_b": "bb_middle_20"},
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 0,
+        },
+    },
+    param_ranges=[],
+))
+
+# 6. 多層Volume Spike検出ショート（SLなし版）
+_register(StrategyTemplate(
+    name="multi_layer_volume_spike_short_nosl",
+    description="多層Volume Spike検出ショート（3層フィルター）（SLなし・SL狩り回避版）",
+    config_template={
+        "name": "multi_layer_volume_spike_short_nosl",
+        "side": "short",
+        "indicators": [
+            {"type": "volume_spike_indicators"},
+        ],
+        "entry_conditions": [
+            {
+                "type": "multi_layer_volume_spike",
+                "spike_threshold": "{spike_threshold}",
+                "price_drop_pct": "{price_drop_pct}",
+                "consecutive_bars": "{consecutive_bars}",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 0,
+            "timeout_bars": 20,
+        },
+    },
+    param_ranges=[
+        ParameterRange("spike_threshold", 2.0, 3.0, 0.5, "float"),  # 2.0, 2.5, 3.0
+        ParameterRange("price_drop_pct", 1.5, 2.5, 0.5, "float"),   # 1.5, 2.0, 2.5
+        ParameterRange("consecutive_bars", 1, 3, 1, "int"),         # 1, 2, 3
+    ],
+))
+
+# 7. Volume加速度検出ショート（SLなし版）
+_register(StrategyTemplate(
+    name="volume_accel_short_nosl",
+    description="Volume加速度検出ショート（BB下限ブレイク付き）（SLなし・SL狩り回避版）",
+    config_template={
+        "name": "volume_accel_short_nosl",
+        "side": "short",
+        "indicators": [
+            {"type": "volume_spike_indicators"},
+            {"type": "bollinger", "period": 20, "std_dev": 2.0},
+        ],
+        "entry_conditions": [
+            {
+                "type": "volume_acceleration",
+                "accel_threshold": "{accel_threshold}",
+                "lookback": "{lookback}",
+            },
+            {
+                "type": "threshold",
+                "column": "close",
+                "operator": "<",
+                "value": "bb_lower_20",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 0,
+            "timeout_bars": 20,
+        },
+    },
+    param_ranges=[
+        ParameterRange("accel_threshold", 1.5, 2.5, 0.5, "float"),  # 1.5, 2.0, 2.5
+        ParameterRange("lookback", 2, 4, 1, "int"),                 # 2, 3, 4
+    ],
+))

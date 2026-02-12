@@ -15,6 +15,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from indicators.registry import create_indicator
+from indicators.volume import add_volume_spike_indicators
 from strategy.base import ExitRule, Signal, Side, Strategy
 from strategy.conditions import (
     BBSqueezeCondition,
@@ -23,10 +24,17 @@ from strategy.conditions import (
     CompoundCondition,
     Condition,
     CrossoverCondition,
+    DonchianCondition,
     EMAStateCondition,
+    MultiLayerVolumeSpikeCondition,
+    PriceVolumeDivergenceCondition,
+    RSIConnorsCondition,
+    SuperTrendCondition,
     ThresholdCondition,
     TimeBasedCondition,
     TrapGridCondition,
+    TSMOMCondition,
+    VolumeAccelerationCondition,
     VolumeCondition,
 )
 
@@ -70,6 +78,13 @@ class ConfigStrategy(Strategy):
         for ind_conf in self._indicator_configs:
             conf = dict(ind_conf)
             name = conf.pop("type")
+
+            # Volume Spike indicators（関数型）の特別処理
+            if name == "volume_spike_indicators":
+                df = add_volume_spike_indicators(df)
+                continue
+
+            # 通常のIndicatorクラス
             indicator = create_indicator(name, **conf)
             self._indicators.append(indicator)
             df = indicator.calculate(df)
@@ -158,6 +173,58 @@ class ConfigStrategy(Strategy):
                     TimeBasedCondition(
                         start_hour=c["start_hour"],
                         end_hour=c["end_hour"]
+                    )
+                )
+            elif ctype == "tsmom":
+                conditions.append(
+                    TSMOMCondition(
+                        roc_period=c["roc_period"],
+                        threshold=c.get("threshold", 0.0)
+                    )
+                )
+            elif ctype == "rsi_connors":
+                conditions.append(
+                    RSIConnorsCondition(
+                        sma_period=c["sma_period"],
+                        rsi_threshold=c["rsi_threshold"]
+                    )
+                )
+            elif ctype == "donchian":
+                conditions.append(
+                    DonchianCondition(
+                        period=c["period"]
+                    )
+                )
+            elif ctype == "supertrend":
+                conditions.append(
+                    SuperTrendCondition(
+                        period=c["period"],
+                        multiplier=c["multiplier"],
+                        direction=c.get("direction", "below")
+                    )
+                )
+            elif ctype == "multi_layer_volume_spike":
+                conditions.append(
+                    MultiLayerVolumeSpikeCondition(
+                        spike_threshold=c["spike_threshold"],
+                        price_drop_pct=c["price_drop_pct"],
+                        consecutive_bars=c["consecutive_bars"],
+                        volume_period=c.get("volume_period", 20)
+                    )
+                )
+            elif ctype == "volume_acceleration":
+                conditions.append(
+                    VolumeAccelerationCondition(
+                        accel_threshold=c["accel_threshold"],
+                        lookback=c["lookback"]
+                    )
+                )
+            elif ctype == "price_volume_divergence":
+                conditions.append(
+                    PriceVolumeDivergenceCondition(
+                        price_change_threshold=c["price_change_threshold"],
+                        volume_change_threshold=c["volume_change_threshold"],
+                        period=c["period"]
                     )
                 )
 

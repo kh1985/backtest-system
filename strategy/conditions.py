@@ -339,6 +339,136 @@ class TimeBasedCondition(Condition):
             return f"JST時刻が{self.start_hour}時～翌{self.end_hour}時未満"
 
 
+class RSIConnorsCondition(Condition):
+    """
+    RSI(2) Connors式ショート条件
+
+    Larry Connors氏のRSI(2)戦略:
+    - ベアラリーの頂点（RSI(2)が高値圏）でショートエントリー
+    - SMA(200)下でトレンド方向確認
+    """
+
+    def __init__(self, sma_period: int = 200, rsi_threshold: int = 95):
+        self.sma_period = sma_period
+        self.rsi_threshold = rsi_threshold
+
+    def evaluate(self, row, prev_row=None) -> bool:
+        close = row.get("close")
+        sma = row.get(f"sma_{self.sma_period}")
+        rsi_2 = row.get("rsi_2")
+
+        if any(v is None or pd.isna(v) for v in [close, sma, rsi_2]):
+            return False
+
+        # close < SMA(200): 下降トレンド確認
+        # RSI(2) > threshold: ベアラリー頂点（売られすぎではなく買われすぎ）
+        return close < sma and rsi_2 > self.rsi_threshold
+
+    def describe(self) -> str:
+        return f"RSI(2) Connors: close < SMA({self.sma_period}) AND RSI(2) > {self.rsi_threshold}"
+
+
+class DonchianCondition(Condition):
+    """
+    Donchian Channel ブレイクダウン条件
+
+    close が過去N本の最安値を下回ったらショートエントリー（タートル流）
+    """
+
+    def __init__(self, period: int = 20):
+        """
+        Args:
+            period: Donchian Channel の期間（デフォルト: 20）
+        """
+        self.period = period
+
+    def evaluate(self, row, prev_row=None) -> bool:
+        """
+        close が donchian_lower（過去N本の最安値）を下回っているかチェック
+
+        Args:
+            row: 現在行
+            prev_row: 前行（未使用）
+
+        Returns:
+            bool: ブレイクダウン条件を満たすか
+        """
+        col_name = f"donchian_lower_{self.period}"
+        donchian_lower = row.get(col_name)
+        close = row.get("close")
+
+        if donchian_lower is None or close is None or pd.isna(donchian_lower) or pd.isna(close):
+            return False
+
+        return close < donchian_lower
+
+    def describe(self) -> str:
+        return f"close < Donchian Lower({self.period})"
+
+
+class TSMOMCondition(Condition):
+    """
+    TSMOM (Time Series Momentum) 条件
+
+    ROC (Rate of Change) が閾値より低い場合にショートシグナル。
+    AQR「クライシスアルファ」戦略の基本コンセプト。
+    """
+
+    def __init__(self, roc_period: int = 30, threshold: float = 0.0):
+        self.roc_period = roc_period
+        self.threshold = threshold
+
+    def evaluate(self, row, prev_row=None) -> bool:
+        roc = row.get(f"roc_{self.roc_period}")
+        if roc is None or pd.isna(roc):
+            return False
+        return roc < self.threshold
+
+    def describe(self) -> str:
+        return f"ROC({self.roc_period}) < {self.threshold}"
+
+
+class SuperTrendCondition(Condition):
+    """
+    SuperTrend 条件
+
+    ATR適応型トレンド指標。close < supertrend でダウントレンド判定（ショート条件）、
+    close > supertrend でアップトレンド判定（ロング条件）。
+
+    パラメータ:
+    - period: ATR計算期間（デフォルト: 10）
+    - multiplier: ATRの乗数（デフォルト: 3.0）
+    - direction: "below"（ショート）または "above"（ロング）
+    """
+
+    def __init__(self, period: int = 10, multiplier: float = 3.0, direction: str = "below"):
+        if direction not in ("above", "below"):
+            raise ValueError(f"direction must be 'above' or 'below', got {direction}")
+        self.period = period
+        self.multiplier = multiplier
+        self.direction = direction
+
+    def evaluate(self, row, prev_row=None) -> bool:
+        # SuperTrendインジケーターのカラム名を構築
+        st_col = f"supertrend_{self.period}_{self.multiplier}"
+        supertrend = row.get(st_col)
+        close = row.get("close")
+
+        if supertrend is None or close is None:
+            return False
+        if pd.isna(supertrend) or pd.isna(close):
+            return False
+
+        if self.direction == "below":
+            return close < supertrend
+        else:
+            return close > supertrend
+
+    def describe(self) -> str:
+        direction_str = "下" if self.direction == "below" else "上"
+        return f"close が SuperTrend({self.period}, {self.multiplier}) の{direction_str}"
+
+
 class CompoundCondition(Condition):
     """複合条件: AND / OR"""
 
@@ -358,3 +488,154 @@ class CompoundCondition(Condition):
         joiner = " AND " if self.logic == "and" else " OR "
         parts = [c.describe() for c in self.conditions]
         return f"({joiner.join(parts)})"
+
+
+class MultiLayerVolumeSpikeCondition(Condition):
+    """多層Volume Spike検出（3層フィルター）
+
+    Layer 1: Volume Spike（volume >= avg × threshold）
+    Layer 2: Price Drop（価格下落 >= threshold%）
+    Layer 3: Consecutive Bearish（連続陰線）
+    """
+
+    def __init__(
+        self,
+        spike_threshold: float = 2.5,
+        price_drop_pct: float = 2.0,
+        consecutive_bars: int = 2,
+        volume_period: int = 20,
+    ):
+        self.spike_threshold = spike_threshold
+        self.price_drop_pct = price_drop_pct
+        self.consecutive_bars = consecutive_bars
+        self.volume_period = volume_period
+
+    def evaluate(self, row, prev_row=None) -> bool:
+        # Layer 1: Volume Spike
+        vol_avg_col = f"volume_sma_{self.volume_period}"
+        vol_avg = row.get(vol_avg_col)
+        volume = row.get("volume")
+
+        if vol_avg is None or volume is None or pd.isna(vol_avg) or pd.isna(volume):
+            return False
+
+        if volume < vol_avg * self.spike_threshold:
+            return False
+
+        # Layer 2: Price Drop（陰線で下落率チェック）
+        open_price = row.get("open")
+        close_price = row.get("close")
+
+        if open_price is None or close_price is None:
+            return False
+        if pd.isna(open_price) or pd.isna(close_price):
+            return False
+        if open_price == 0:
+            return False
+
+        # 陰線であることを確認
+        if close_price >= open_price:
+            return False
+
+        price_drop = (close_price - open_price) / open_price * 100
+        if price_drop >= -self.price_drop_pct:
+            return False
+
+        # Layer 3: Consecutive Bearish（連続陰線チェック）
+        # consecutive_bars=1の場合は現在のbarのみ（既に陰線確認済み）
+        if self.consecutive_bars == 1:
+            return True
+
+        # consecutive_bars >= 2の場合、過去のbarもチェック
+        # 注: DataFrameレベルでの事前計算が必要
+        # ここでは簡易版として、prev_rowのみチェック
+        if self.consecutive_bars >= 2 and prev_row is not None:
+            prev_open = prev_row.get("open")
+            prev_close = prev_row.get("close")
+            if prev_open is None or prev_close is None:
+                return False
+            if pd.isna(prev_open) or pd.isna(prev_close):
+                return False
+            if prev_close >= prev_open:
+                return False
+
+        return True
+
+    def describe(self) -> str:
+        return (
+            f"MultiLayerVolumeSpike(spike={self.spike_threshold}x, "
+            f"drop={self.price_drop_pct}%, bars={self.consecutive_bars})"
+        )
+
+
+class VolumeAccelerationCondition(Condition):
+    """Volume加速度検出（急激な出来高増加率の変化）
+
+    Volume変化率の変化率（2次微分）を検出
+    vol_change[t] = volume[t] / volume[t-1]
+    vol_accel[t] = vol_change[t] / vol_change[t-lookback]
+    """
+
+    def __init__(
+        self,
+        accel_threshold: float = 1.5,
+        lookback: int = 3,
+    ):
+        self.accel_threshold = accel_threshold
+        self.lookback = lookback
+
+    def evaluate(self, row, prev_row=None) -> bool:
+        # Volume加速度（事前計算カラムを使用）
+        vol_accel_col = f"volume_accel_{self.lookback}"
+        vol_accel = row.get(vol_accel_col)
+
+        if vol_accel is None or pd.isna(vol_accel):
+            return False
+
+        return vol_accel >= self.accel_threshold
+
+    def describe(self) -> str:
+        return f"VolumeAccel(threshold={self.accel_threshold}x, lookback={self.lookback})"
+
+
+class PriceVolumeDivergenceCondition(Condition):
+    """価格とVolumeの逆行検出（急落 + 出来高急増）
+
+    価格は下落しているが、Volumeは増加している状態を検出
+    """
+
+    def __init__(
+        self,
+        price_change_threshold: float = -1.5,
+        volume_change_threshold: float = 2.0,
+        period: int = 3,
+    ):
+        self.price_threshold = price_change_threshold
+        self.vol_threshold = volume_change_threshold
+        self.period = period
+
+    def evaluate(self, row, prev_row=None) -> bool:
+        # 価格変化率（事前計算カラムを使用）
+        price_change_col = f"close_pct_change_{self.period}"
+        price_change = row.get(price_change_col)
+
+        # Volume変化率（事前計算カラムを使用）
+        vol_change_col = f"volume_ratio_{self.period}"
+        vol_change = row.get(vol_change_col)
+
+        if price_change is None or vol_change is None:
+            return False
+        if pd.isna(price_change) or pd.isna(vol_change):
+            return False
+
+        # 価格は下落 AND Volumeは増加
+        return (
+            price_change <= self.price_threshold and
+            vol_change >= self.vol_threshold
+        )
+
+    def describe(self) -> str:
+        return (
+            f"PriceVolDivergence(price<={self.price_threshold}%, "
+            f"vol>={self.vol_threshold}x, period={self.period})"
+        )

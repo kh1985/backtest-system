@@ -762,6 +762,62 @@ def vectorize_entry_signals(
             else:
                 signals.append(np.zeros(n, dtype=np.bool_))
 
+        elif ctype == "multi_layer_volume_spike":
+            spike_threshold = c["spike_threshold"]
+            price_drop_pct = c["price_drop_pct"]
+            consecutive_bars = c.get("consecutive_bars", 2)
+            volume_period = c.get("volume_period", 20)
+
+            vol_avg_col = f"volume_sma_{volume_period}"
+            if "volume" in df.columns and vol_avg_col in df.columns:
+                # Layer 1: Volume Spike
+                volume_spike = df["volume"] >= (df[vol_avg_col] * spike_threshold)
+
+                # Layer 2: Price Drop（陰線 + 下落率）
+                is_bearish = df["close"] < df["open"]
+                price_drop = (df["close"] - df["open"]) / df["open"].replace(0, np.nan) * 100
+                price_drop_sig = (is_bearish) & (price_drop <= -price_drop_pct)
+
+                # Layer 3: Consecutive Bearish（簡易版: 現在+前バーのみ）
+                if consecutive_bars >= 2:
+                    prev_bearish = (df["close"].shift(1) < df["open"].shift(1))
+                    sig = volume_spike & price_drop_sig & prev_bearish
+                else:
+                    sig = volume_spike & price_drop_sig
+
+                signals.append(sig.fillna(False).values.astype(np.bool_))
+            else:
+                signals.append(np.zeros(n, dtype=np.bool_))
+
+        elif ctype == "volume_acceleration":
+            accel_threshold = c["accel_threshold"]
+            lookback = c.get("lookback", 3)
+            vol_accel_col = f"volume_accel_{lookback}"
+
+            if vol_accel_col in df.columns:
+                sig = df[vol_accel_col] >= accel_threshold
+                signals.append(sig.fillna(False).values.astype(np.bool_))
+            else:
+                signals.append(np.zeros(n, dtype=np.bool_))
+
+        elif ctype == "price_volume_divergence":
+            price_threshold = c["price_change_threshold"]
+            vol_threshold = c["volume_change_threshold"]
+            period = c.get("period", 3)
+
+            # 価格変化率カラム（事前計算）
+            price_change_col = f"close_pct_change_{period}"
+            vol_ratio_col = f"volume_ratio_{period}"
+
+            if price_change_col in df.columns and vol_ratio_col in df.columns:
+                # 価格は下落（負のthreshold）、Volumeは増加
+                price_sig = df[price_change_col] <= price_threshold
+                vol_sig = df[vol_ratio_col] >= vol_threshold
+                sig = price_sig & vol_sig
+                signals.append(sig.fillna(False).values.astype(np.bool_))
+            else:
+                signals.append(np.zeros(n, dtype=np.bool_))
+
         else:
             signals.append(np.zeros(n, dtype=np.bool_))
 
