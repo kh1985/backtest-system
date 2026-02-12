@@ -155,8 +155,9 @@ def optimize_one(
 
     # --- Config生成 ---
     exit_profiles = None
-    if exit_profiles_mode != "none":
+    if exit_profiles_mode not in ("none", "fixed"):
         exit_profiles = get_profiles(exit_profiles_mode)
+    # "fixed" の場合は exit_profiles=None → テンプレート定義のexitを使用
 
     filter_patterns = None
     if template_filter:
