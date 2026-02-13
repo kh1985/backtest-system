@@ -19,6 +19,7 @@ from indicators.volume import add_volume_spike_indicators
 from strategy.base import ExitRule, Signal, Side, Strategy
 from strategy.conditions import (
     BBSqueezeCondition,
+    BearishEngulfingCondition,
     CandlePatternCondition,
     ColumnCompareCondition,
     CompoundCondition,
@@ -28,6 +29,7 @@ from strategy.conditions import (
     EMAStateCondition,
     MultiLayerVolumeSpikeCondition,
     PriceVolumeDivergenceCondition,
+    ReversalHighCondition,
     RSIConnorsCondition,
     SuperTrendCondition,
     ThresholdCondition,
@@ -36,6 +38,7 @@ from strategy.conditions import (
     TSMOMCondition,
     VolumeAccelerationCondition,
     VolumeCondition,
+    WickFillCondition,
 )
 
 
@@ -225,6 +228,30 @@ class ConfigStrategy(Strategy):
                         price_change_threshold=c["price_change_threshold"],
                         volume_change_threshold=c["volume_change_threshold"],
                         period=c["period"]
+                    )
+                )
+            elif ctype == "reversal_high":
+                conditions.append(
+                    ReversalHighCondition(
+                        lookback=c.get("lookback", 3),
+                        wick_ratio=c.get("wick_ratio", 2.0),
+                        atr_mult=c.get("atr_mult", 1.5),
+                        atr_period=c.get("atr_period", 14),
+                    )
+                )
+            elif ctype == "bearish_engulfing":
+                conditions.append(
+                    BearishEngulfingCondition(
+                        body_atr_mult=c.get("body_atr_mult", 0.8),
+                        atr_period=c.get("atr_period", 14),
+                    )
+                )
+            elif ctype == "wick_fill":
+                conditions.append(
+                    WickFillCondition(
+                        lookback=c.get("lookback", 3),
+                        wick_ratio=c.get("wick_ratio", 1.5),
+                        ema_period=c.get("ema_period", 13),
                     )
                 )
 

@@ -818,6 +818,83 @@ def vectorize_entry_signals(
             else:
                 signals.append(np.zeros(n, dtype=np.bool_))
 
+        elif ctype == "reversal_high":
+            lookback = c.get("lookback", 3)
+            wick_ratio = c.get("wick_ratio", 2.0)
+            atr_mult = c.get("atr_mult", 1.5)
+            atr_period = c.get("atr_period", 14)
+
+            rally_col = f"_rally_{lookback}"
+            atr_col = f"atr_{atr_period}"
+
+            if rally_col in df.columns and atr_col in df.columns:
+                o = df["open"]
+                h = df["high"]
+                lo = df["low"]
+                cl = df["close"]
+                atr = df[atr_col]
+                rally = df[rally_col]
+
+                is_bearish = cl < o
+                body = (o - cl).abs()
+                upper_wick = h - pd.concat([o, cl], axis=1).max(axis=1)
+                lower_wick = pd.concat([o, cl], axis=1).min(axis=1) - lo
+                denom = body + lower_wick
+                wr = upper_wick / denom.replace(0, np.nan)
+
+                sig = is_bearish & (rally >= atr * atr_mult) & (wr >= wick_ratio)
+                signals.append(sig.fillna(False).values.astype(np.bool_))
+            else:
+                signals.append(np.zeros(n, dtype=np.bool_))
+
+        elif ctype == "bearish_engulfing":
+            body_atr_mult = c.get("body_atr_mult", 0.8)
+            atr_period = c.get("atr_period", 14)
+            atr_col = f"atr_{atr_period}"
+
+            if atr_col in df.columns:
+                o = df["open"]
+                cl = df["close"]
+                po = o.shift(1)
+                pc = cl.shift(1)
+                atr = df[atr_col]
+
+                is_bearish = cl < o
+                is_prev_bull = pc > po
+                engulf = is_bearish & is_prev_bull & (o >= pc) & (cl <= po)
+                body = (o - cl).abs()
+                body_ok = body >= atr * body_atr_mult
+
+                sig = engulf & body_ok
+                signals.append(sig.fillna(False).values.astype(np.bool_))
+            else:
+                signals.append(np.zeros(n, dtype=np.bool_))
+
+        elif ctype == "wick_fill":
+            lookback = c.get("lookback", 3)
+            ema_period = c.get("ema_period", 13)
+
+            spike_body_col = f"_spike_body_top_{lookback}"
+            ema_col = f"ema_{ema_period}"
+
+            if spike_body_col in df.columns and ema_col in df.columns:
+                cl = df["close"]
+                o = df["open"]
+                h = df["high"]
+                spike_body = df[spike_body_col]
+                ema = df[ema_col]
+                ema_prev = ema.shift(1)
+
+                is_bearish = cl < o
+                reach = h >= spike_body
+                has_spike = spike_body.notna()
+                ema_down = ema < ema_prev
+
+                sig = is_bearish & has_spike & reach & ema_down
+                signals.append(sig.fillna(False).values.astype(np.bool_))
+            else:
+                signals.append(np.zeros(n, dtype=np.bool_))
+
         else:
             signals.append(np.zeros(n, dtype=np.bool_))
 

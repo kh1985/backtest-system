@@ -12,7 +12,7 @@
 
 ---
 
-## 現在の状態: Step 18 — DT/Range 新アプローチ調査完了
+## 現在の状態: Step 19 — UT+DT ポートフォリオ確定
 
 ### 確定した実運用推奨戦略（2026-02-11 Step 17完了）
 
@@ -265,10 +265,54 @@ Priority A exit検証でDT戦略が改善不十分（27% ROBUST）。FR/OI等の
 
 ### 次のアクション候補
 
-1. **BB Squeeze Breakout 実装**（推奨・即座）
-2. **トラリピ実装**（条件付き）
-3. **Priority B exit検証**（継続）
-4. **方針変更の再検討**
+1. ~~BB Squeeze Breakout 実装~~ → 不要（pullback_sma_shortで十分）
+2. ~~トラリピ実装~~ → 不要（Range待機方針に決定）
+3. ~~Priority B exit検証~~ → 不要（SL最適化で解決）
+4. **実運用Bot設計・実装** ← 最優先
+5. **Guardian Bot（G1）** ← 次優先
+
+---
+
+## Step 19: DT戦略確立 + UT+DTポートフォリオ確定（2026-02-13）✅
+
+### やがみ式パターン探索
+- 5テンプレート実装（reversal_high, bearish_engulfing, wick_fill, ema_crossdown, bearish_engulfing_dt）
+- WFA結果: 20-30% PASS（銘柄限定Go）
+- 15m足ではDT全滅→1h足で改善（DT構造は時間足レベルで機能する発見）
+
+### pullback_sma_short 発見・最適化
+- SMAタッチ拒否→ショート（high>=SMA AND close<SMA）
+- 既存column_compare条件で実装、パラメータ3つ（sma_period=15/20/25）
+- **SL最適化: SL=2.0→SL=1.0で大幅改善**（AVAX PnL 2倍、ADA 3.3倍）
+- DT WFA: **14/30 (47%) PASS** — 中小型アルトが主戦場
+- トレーリングストップ: DT全般で全滅確定
+
+### SL最適化の知見
+- DT: SL=1.0×ATR（狭い）が最適 — エントリー根拠が明確なので即損切り
+- UT: SL=1.5×ATR が最適（Step 17で確定済み）
+- レジームごとに最適SLが異なる
+
+### 30銘柄WFA拡大
+- DT: 10銘柄(3 PASS) → 30銘柄(**14 PASS**)。中小型アルトで大幅改善
+- UT: 22銘柄(11 PASS) → 30銘柄(10 PASS)。UTは大型銘柄寄りで安定
+
+### UT+DT ポートフォリオ確定
+| レジーム | 戦略 | TF | Exit | PASS |
+|---|---|---|---|---|
+| **UT** | rsi_bb_long_f35 | 15m:1h | atr_tp15_sl15 | 10/30 (33%) |
+| **DT** | pullback_sma_short | 1h:4h | atr_tp15_sl10 | 14/30 (47%) |
+| **Range** | 待機（ノーポジ） | - | - | - |
+
+### 全天候型銘柄（UT+DT両方PASS）
+PEPE(+161%), WIF(+77%), OP(+51%), APT(+47%), JUP(+41%), ADA(+26%)
+
+### 理論APY
+- 保守: 年10-12%、標準: 年15-20%、集中: 年25-35%
+
+### 確定事項
+- Range戦略は不要（UT+DTでカバー、Range期間はノーポジ待機）
+- BB Squeeze Breakout不要（既存DT戦略で十分なPASS率）
+- 年間トレード数: DT中に約170回（月14回、週3-4回）
 
 ---
 
@@ -314,8 +358,9 @@ Priority A exit検証でDT戦略が改善不十分（27% ROBUST）。FR/OI等の
 - インジケーター期間は**固定**（RSI=14, BB=20/2σ, EMA=5/13）
 - BB σ = **2.0固定**（σ拡張は逆効果）
 - **3重複合は不要**（条件過剰でトレード数激減）
-- **ロング: RSI<35固定 / tp20 が最も堅牢**（ROBUST 37%）
-- **ショート: EMA(5)<EMA(13) + BB中間 / tp15 がDT最強**（ROBUST 24%）
+- **ロング: RSI<35 + BB lower / tp15_sl15 が最強**（ROBUST 50%→33% @30銘柄）
+- **ショート: SMAタッチ拒否 / tp15_sl10 がDT最強**（ROBUST 47% @30銘柄）
+- **SL最適化はレジーム依存**（UT: SL=1.5, DT: SL=1.0）
 - **exit固定がWFA安定性の鍵**
 - **モメンタム確認(EMA cross) > 閾値条件(RSI>X)**
 - **探索空間を小さくする = PASS率改善の鍵**

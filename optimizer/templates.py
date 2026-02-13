@@ -1,7 +1,7 @@
 """
 戦略テンプレート
 
-25種の組み込みテンプレート:
+30種の組み込みテンプレート:
 - 基本テンプレート（ロング7種 + ショート7種 = 14種）
 - VWAP戦略（6種）:
   - vwap_touch_long/short: VWAPタッチ（押し目/戻り）
@@ -13,6 +13,10 @@
   - rsi_volume_reversal_short: RSI買われすぎ + 出来高急増 → ショート
   - rsi_bb_reversal: RSI売られすぎ + BB下限タッチ → ロング
   - rsi_bb_reversal_short: RSI買われすぎ + BB上限タッチ → ショート
+- やがみ式ローソク足テンプレート（3種）:
+  - reversal_high_short: リバーサルハイ（急上昇後の上髭陰線）→ ショート
+  - bearish_engulfing_short: 包み陰線 + BB上限 → ショート
+  - wick_fill_short: 髭埋め（ミスプライス理論）→ ショート
 
 プレースホルダー {param} で変数パラメータを定義し、
 generate_configs() で全組み合わせ（直積）を自動生成。
@@ -3771,5 +3775,222 @@ _register(StrategyTemplate(
     param_ranges=[
         ParameterRange("accel_threshold", 1.5, 2.5, 0.5, "float"),  # 1.5, 2.0, 2.5
         ParameterRange("lookback", 2, 4, 1, "int"),                 # 2, 3, 4
+    ],
+))
+
+
+# =====================================================================
+# やがみ式ローソク足ノウハウ ショートテンプレート（3種）
+# =====================================================================
+
+# 1. リバーサルハイ・ショート
+# Book1: 「リバーサルハイ = 最強。ほぼ高値が確定する。」
+# 急上昇後に上髭の長い陰線 → トップ確定シグナル
+_register(StrategyTemplate(
+    name="reversal_high_short",
+    description="リバーサルハイ: 急上昇後の上髭陰線でショート（やがみ式）",
+    config_template={
+        "name": "reversal_high_short",
+        "side": "short",
+        "indicators": [
+            {"type": "atr", "period": 14},
+            {"type": "rally_calc", "lookback": "{lookback}"},
+        ],
+        "entry_conditions": [
+            {
+                "type": "reversal_high",
+                "lookback": "{lookback}",
+                "wick_ratio": "{wick_ratio}",
+                "atr_mult": "{atr_mult}",
+                "atr_period": 14,
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.5,
+        },
+    },
+    param_ranges=[
+        ParameterRange("lookback", 2, 4, 1, "int"),            # 2, 3, 4
+        ParameterRange("wick_ratio", 1.5, 2.0, 0.5, "float"),  # 1.5, 2.0
+        ParameterRange("atr_mult", 1.5, 2.0, 0.5, "float"),    # 1.5, 2.0
+    ],
+))
+
+# 2. 包み陰線ショート（BB上限付近フィルター付き）
+# Book1: 「③前回陽線を包む陰線 → 転換点で多く見られ、安値圏で出現すると鉄板」の逆
+# BB上限付近 + 包み陰線 = 高値圏での転換シグナル
+_register(StrategyTemplate(
+    name="bearish_engulfing_short",
+    description="包み陰線 + BB上限: 高値圏での転換ショート（やがみ式）",
+    config_template={
+        "name": "bearish_engulfing_short",
+        "side": "short",
+        "indicators": [
+            {"type": "atr", "period": 14},
+            {"type": "bollinger", "period": "{bb_period}", "std_dev": 2.0},
+        ],
+        "entry_conditions": [
+            {
+                "type": "bearish_engulfing",
+                "body_atr_mult": "{body_atr_mult}",
+                "atr_period": 14,
+            },
+            {
+                "type": "column_compare",
+                "column_a": "high",
+                "operator": ">=",
+                "column_b": "bb_upper_{bb_period}",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.5,
+        },
+    },
+    param_ranges=[
+        ParameterRange("bb_period", 15, 20, 5, "int"),               # 15, 20
+        ParameterRange("body_atr_mult", 0.5, 1.0, 0.25, "float"),    # 0.5, 0.75, 1.0
+    ],
+))
+
+# 3. 髭埋めショート（ミスプライス理論）
+# Book1: 「髭を埋めにくるムーブは即ポジションをフラットにするか持ち替えたほうがいい」
+# 「適正価格=実体、ミスプライス=髭。実体で髭を埋めてくる=適正価格の切り下げ」
+_register(StrategyTemplate(
+    name="wick_fill_short",
+    description="髭埋めショート: 上髭を実体で埋め→適正価格切り下げ（やがみ式）",
+    config_template={
+        "name": "wick_fill_short",
+        "side": "short",
+        "indicators": [
+            {"type": "ema", "period": "{ema_period}"},
+            {"type": "wick_spike_calc", "lookback": "{lookback}", "wick_ratio": "{wick_ratio}"},
+        ],
+        "entry_conditions": [
+            {
+                "type": "wick_fill",
+                "lookback": "{lookback}",
+                "wick_ratio": "{wick_ratio}",
+                "ema_period": "{ema_period}",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.5,
+        },
+    },
+    param_ranges=[
+        ParameterRange("lookback", 3, 5, 2, "int"),            # 3, 5
+        ParameterRange("wick_ratio", 1.5, 2.0, 0.5, "float"),  # 1.5, 2.0
+        ParameterRange("ema_period", 5, 13, 8, "int"),          # 5, 13
+    ],
+))
+
+
+# ====================================================================
+# DT探索 Step で発見されたダウントレンド向けパターン (2026-02-13)
+# ====================================================================
+
+# --- EMAクロスダウン: EMA5がEMA13を下抜け → ショート ---
+# DT探索結果: 全銘柄平均 +18.6%/銘柄 (tp20_sl15), WR 43.0%
+# tp30_sl20 では +30.3%/銘柄。シンプルだが最強のDTパターン。
+# 探索空間: fast(5,8) × slow(13,21) = 4 configs → 過学習リスク低
+_register(StrategyTemplate(
+    name="ema_crossdown_short",
+    description="EMAクロスダウン: 短期EMAが中期EMAを下抜け→ショート（DT向け）",
+    config_template={
+        "name": "ema_crossdown_short",
+        "side": "short",
+        "indicators": [
+            {"type": "ema", "period": "{fast_period}"},
+            {"type": "ema", "period": "{slow_period}"},
+        ],
+        "entry_conditions": [
+            {
+                "type": "crossover",
+                "fast": "ema_{fast_period}",
+                "slow": "ema_{slow_period}",
+                "direction": "below",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.5,
+        },
+    },
+    param_ranges=[
+        ParameterRange("fast_period", 5, 8, 3, "int"),    # 5, 8
+        ParameterRange("slow_period", 13, 21, 8, "int"),   # 13, 21
+    ],
+))
+
+
+# --- 包み陰線（BBなし）: ダウントレンドではBB条件が逆効果 ---
+# DT探索結果: BBなし +14.4%/銘柄 vs BB upper -4.5%/銘柄
+# strict engulfing (open>=prev_close, close<=prev_open) のBBフィルタ除去版
+# 探索空間: body_atr_mult(0.3, 0.5, 0.75) = 3 configs
+_register(StrategyTemplate(
+    name="bearish_engulfing_dt_short",
+    description="包み陰線（BBなし）: ダウントレンド向け純粋包み足ショート（やがみ式）",
+    config_template={
+        "name": "bearish_engulfing_dt_short",
+        "side": "short",
+        "indicators": [
+            {"type": "atr", "period": 14},
+        ],
+        "entry_conditions": [
+            {
+                "type": "bearish_engulfing",
+                "body_atr_mult": "{body_atr_mult}",
+                "atr_period": 14,
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {
+            "take_profit_pct": 2.0,
+            "stop_loss_pct": 1.5,
+        },
+    },
+    param_ranges=[
+        ParameterRange("body_atr_mult", 0.3, 0.75, 0.225, "float"),  # 0.3, 0.525, 0.75
+    ],
+))
+
+
+# --- 戻り売り（Pullback Short）テンプレート ---
+
+_register(StrategyTemplate(
+    name="pullback_sma_short",
+    description="戻り売り: DT中にSMAまで戻り→拒否→ショート（high>=SMA AND close<SMA）",
+    config_template={
+        "name": "pullback_sma_short",
+        "side": "short",
+        "indicators": [
+            {"type": "sma", "period": "{sma_period}"},
+        ],
+        "entry_conditions": [
+            {
+                "type": "column_compare",
+                "column_a": "high",
+                "operator": ">=",
+                "column_b": "sma_{sma_period}",
+            },
+            {
+                "type": "column_compare",
+                "column_a": "close",
+                "operator": "<",
+                "column_b": "sma_{sma_period}",
+            },
+        ],
+        "entry_logic": "and",
+        "exit": {"take_profit_pct": 2.0, "stop_loss_pct": 1.5},
+    },
+    param_ranges=[
+        ParameterRange("sma_period", 15, 25, 5, "int"),  # 15, 20, 25
     ],
 ))

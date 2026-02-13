@@ -469,6 +469,193 @@ class SuperTrendCondition(Condition):
         return f"close が SuperTrend({self.period}, {self.multiplier}) の{direction_str}"
 
 
+class ReversalHighCondition(Condition):
+    """リバーサルハイ条件（やがみ式）
+
+    急上昇後に上髭の長い陰線が出現 → トップ確定のショートシグナル。
+    Book1: 「リバーサルハイ = 最強。ほぼ高値が確定する。」
+
+    判定ロジック:
+    1. 直近N本で大幅上昇（high - N本前close >= ATR × atr_mult）
+    2. 当該足が陰線（close < open）
+    3. 上髭比率が閾値以上（upper_wick / body+lower_wick >= wick_ratio）
+    """
+
+    def __init__(
+        self,
+        lookback: int = 3,
+        wick_ratio: float = 2.0,
+        atr_mult: float = 1.5,
+        atr_period: int = 14,
+    ):
+        self.lookback = lookback
+        self.wick_ratio = wick_ratio
+        self.atr_mult = atr_mult
+        self.atr_period = atr_period
+
+    def evaluate(self, row, prev_row=None) -> bool:
+        o = row.get("open")
+        h = row.get("high")
+        lo = row.get("low")
+        c = row.get("close")
+        atr = row.get(f"atr_{self.atr_period}")
+        rally_col = f"_rally_{self.lookback}"
+        rally = row.get(rally_col)
+
+        if any(v is None or pd.isna(v) for v in [o, h, lo, c, atr]):
+            return False
+        if rally is None or pd.isna(rally):
+            return False
+
+        # 条件1: 直近N本で大幅上昇
+        if rally < atr * self.atr_mult:
+            return False
+
+        # 条件2: 陰線
+        if c >= o:
+            return False
+
+        # 条件3: 上髭比率
+        body = abs(c - o)
+        upper_wick = h - max(o, c)
+        lower_wick = min(o, c) - lo
+        denominator = body + lower_wick
+        if denominator <= 0:
+            return False
+        if upper_wick / denominator < self.wick_ratio:
+            return False
+
+        return True
+
+    def describe(self) -> str:
+        return (
+            f"ReversalHigh(lookback={self.lookback}, wick>={self.wick_ratio}x, "
+            f"rally>=ATR×{self.atr_mult})"
+        )
+
+
+class BearishEngulfingCondition(Condition):
+    """包み陰線条件（やがみ式）
+
+    前回陽線を完全に包む大陰線 → 転換ショートシグナル。
+    Book1: 「③前回陽線を包む陰線 → ショートは無い（ロング視点）」= ショート鉄板。
+
+    判定ロジック:
+    1. 前回足が陽線（prev_close > prev_open）
+    2. 当該足が陰線（close < open）
+    3. 当該足が前回足を包む（open >= prev_close AND close <= prev_open）
+    4. 実体サイズ >= ATR × body_atr_mult（弱い包み足を排除）
+    """
+
+    def __init__(self, body_atr_mult: float = 0.8, atr_period: int = 14):
+        self.body_atr_mult = body_atr_mult
+        self.atr_period = atr_period
+
+    def evaluate(self, row, prev_row=None) -> bool:
+        if prev_row is None:
+            return False
+
+        o = row.get("open")
+        c = row.get("close")
+        po = prev_row.get("open")
+        pc = prev_row.get("close")
+        atr = row.get(f"atr_{self.atr_period}")
+
+        if any(v is None or pd.isna(v) for v in [o, c, po, pc]):
+            return False
+        if atr is None or pd.isna(atr) or atr <= 0:
+            return False
+
+        # 前回足が陽線
+        if pc <= po:
+            return False
+
+        # 当該足が陰線
+        if c >= o:
+            return False
+
+        # 包み条件（当該足のopen >= 前回close, 当該足のclose <= 前回open）
+        if o < pc or c > po:
+            return False
+
+        # 実体サイズフィルター
+        body = abs(o - c)
+        if body < atr * self.body_atr_mult:
+            return False
+
+        return True
+
+    def describe(self) -> str:
+        return f"BearishEngulfing(body>=ATR×{self.body_atr_mult})"
+
+
+class WickFillCondition(Condition):
+    """髭埋めショート条件（やがみ式ミスプライス理論）
+
+    過去の上髭（= ミスプライス）を後続の実体が埋めにくる → 適正価格切り下げ。
+    Book1: 「髭を埋めにくるムーブは即ポジをフラットか持ち替え」
+
+    判定ロジック:
+    1. N本前に上髭の長い足がある（upper_wick > body × wick_ratio）
+    2. 現在足のhighがその上髭高値付近に到達
+    3. 現在足が陰線（実体で髭に入ったが折り返し）
+    4. EMA短期が下向き（下落バイアス確認）
+    """
+
+    def __init__(
+        self,
+        lookback: int = 3,
+        wick_ratio: float = 1.5,
+        ema_period: int = 13,
+    ):
+        self.lookback = lookback
+        self.wick_ratio = wick_ratio
+        self.ema_period = ema_period
+
+    def evaluate(self, row, prev_row=None) -> bool:
+        if prev_row is None:
+            return False
+
+        c = row.get("close")
+        o = row.get("open")
+        h = row.get("high")
+        ema_cur = row.get(f"ema_{self.ema_period}")
+        ema_prev = prev_row.get(f"ema_{self.ema_period}")
+
+        # 過去足の上髭情報（事前計算カラム）
+        spike_high_col = f"_spike_high_{self.lookback}"
+        spike_high = row.get(spike_high_col)
+        spike_body_top_col = f"_spike_body_top_{self.lookback}"
+        spike_body_top = row.get(spike_body_top_col)
+
+        if any(v is None or pd.isna(v) for v in [c, o, h, ema_cur, ema_prev]):
+            return False
+        if spike_high is None or pd.isna(spike_high) or spike_high <= 0:
+            return False
+        if spike_body_top is None or pd.isna(spike_body_top):
+            return False
+
+        # 条件1: 現在足が陰線
+        if c >= o:
+            return False
+
+        # 条件2: highが過去上髭高値付近に到達（body_top以上に入った）
+        if h < spike_body_top:
+            return False
+
+        # 条件3: EMA下向き
+        if ema_cur >= ema_prev:
+            return False
+
+        return True
+
+    def describe(self) -> str:
+        return (
+            f"WickFill(lookback={self.lookback}, wick>={self.wick_ratio}x, "
+            f"EMA({self.ema_period})↓)"
+        )
+
+
 class CompoundCondition(Condition):
     """複合条件: AND / OR"""
 

@@ -13,6 +13,7 @@ from .volatility import BollingerBands, ATR, SuperTrend
 from .volume import VWAP, RelativeVolume, VolumeAnalysis, VolumeProfile, VolumeSMA
 from .adx import ADX
 from .structure import SwingStructure, TrendStructure
+from .candle_pattern import RallyCalc, WickSpikeCalc
 
 
 INDICATOR_REGISTRY: Dict[str, Type[Indicator]] = {
@@ -35,6 +36,8 @@ INDICATOR_REGISTRY: Dict[str, Type[Indicator]] = {
     "adx": ADX,
     "swing": SwingStructure,
     "structure": TrendStructure,
+    "rally_calc": RallyCalc,
+    "wick_spike_calc": WickSpikeCalc,
 }
 
 # UI表示用の情報
